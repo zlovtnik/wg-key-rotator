@@ -1,0 +1,6 @@
+# Run daily at 06:00 local time. Install with `crontab` after copying
+# apps/wg-key-rotator/.env.example to apps/wg-key-rotator/.env and editing it.
+#
+# The wrapper loads .env, changes into the Mix app, and runs the one-shot rotate command.
+PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin
+0 6 * * * /Users/rcs/git/ssl-proxy/apps/wg-key-rotator/bin/wg_key_rotator rotate >> /tmp/wg-key-rotator.log 2>&1
