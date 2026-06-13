@@ -1,0 +1,26 @@
+# Elixir / Mix
+/_build/
+/deps/
+/cover/
+/doc/
+/erts-*/
+/rel/
+*.ez
+erl_crash.dump
+
+# Generated binary
+/bin/wg_key_rotator
+
+# Environment
+.env
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+*~
+
+# IDE
+.idea/
+.vscode/
+*.iml
