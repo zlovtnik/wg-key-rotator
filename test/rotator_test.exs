@@ -30,8 +30,11 @@ defmodule WgKeyRotatorTest do
       "wg", ["genkey"], _opts ->
         {@private_key <> "\n", 0}
 
-      "wg", ["pubkey"], opts ->
-        assert opts[:input] == @private_key <> "\n"
+      "sh", ["-c", cmd], _opts ->
+        assert String.starts_with?(cmd, "wg pubkey < /")
+        tmp_path = String.trim_leading(cmd, "wg pubkey < ")
+        private_key = File.read!(tmp_path) |> String.trim()
+        assert private_key == @private_key
         {@public_key <> "\n", 0}
     end
 

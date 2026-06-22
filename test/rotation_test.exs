@@ -238,8 +238,10 @@ defmodule WgKeyRotator.RotationTest do
         end)
         |> then(&{&1, 0})
 
-      "wg", ["pubkey"], opts ->
-        private_key = String.trim(opts[:input])
+      "sh", ["-c", cmd], _opts ->
+        # wg pubkey < tmp_path -> reads key from temp file written by Keygen.pubkey/2
+        tmp_path = String.trim_leading(cmd, "wg pubkey < ")
+        private_key = File.read!(tmp_path) |> String.trim()
         {Map.fetch!(pubkeys, private_key) <> "\n", 0}
 
       "wg", ["genpsk"], _opts ->

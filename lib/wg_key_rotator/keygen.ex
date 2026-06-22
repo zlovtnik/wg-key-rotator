@@ -48,14 +48,37 @@ defmodule WgKeyRotator.Keygen do
   end
 
   defp pubkey(runner, private_key) do
-    runner
-    |> Command.run(
-      "wg",
-      ["pubkey"],
-      [input: private_key <> "\n", stderr_to_stdout: true],
-      :public_key_derivation
-    )
-    |> trim_output()
+    # Write the private key to a temp file and pipe it into wg pubkey.
+    # We avoid System.cmd's :input option because it requires OTP 26+.
+    tmp_path = temp_path()
+
+    case File.write(tmp_path, private_key <> "\n") do
+      :ok ->
+        result =
+          runner
+          |> Command.run(
+            "sh",
+            ["-c", "wg pubkey < #{tmp_path}"],
+            [stderr_to_stdout: true],
+            :public_key_derivation
+          )
+          |> trim_output()
+
+        _ = File.rm(tmp_path)
+        result
+
+      {:error, reason} ->
+        {:error,
+         %Error{
+           step: :public_key_derivation,
+           message: "failed to write temp key file",
+           details: inspect(reason)
+         }}
+    end
+  end
+
+  defp temp_path do
+    Path.join(System.tmp_dir!(), "wgk-#{System.unique_integer([:positive])}")
   end
 
   defp trim_output({:ok, output}), do: {:ok, String.trim(output)}

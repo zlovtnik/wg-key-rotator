@@ -64,7 +64,7 @@ defmodule WgKeyRotator.ConfigTest do
     File.touch!(Path.join(root, "docker-compose.yaml"))
 
     assert {:error, error} = Config.load(%{"ROTATOR_REPO_ROOT" => root})
-    assert error.step == :waha_base_url
+    assert error.step == :waha_chat_id
   end
 
   defp tmp_repo do

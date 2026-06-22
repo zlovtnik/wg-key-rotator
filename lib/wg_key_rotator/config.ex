@@ -81,7 +81,7 @@ defmodule WgKeyRotator.Config do
         next_admin_port: positive_integer(env["ROTATOR_NEXT_ADMIN_PORT"], 3_012),
         health_url: blank_to_nil(env["ROTATOR_HEALTH_URL"]) || "http://127.0.0.1:3002/health",
         health_timeout_ms: positive_integer(env["ROTATOR_HEALTH_TIMEOUT_MS"], 5_000),
-        waha_base_url: blank_to_nil(env["WAHA_BASE_URL"]),
+        waha_base_url: blank_to_nil(env["WAHA_BASE_URL"]) || "http://127.0.0.1:3006",
         waha_session: blank_to_nil(env["WAHA_SESSION"]) || "default",
         waha_chat_id: blank_to_nil(env["WAHA_CHAT_ID"]),
         waha_api_key: secret(env, "WAHA_API_KEY", "WAHA_API_KEY_FILE"),

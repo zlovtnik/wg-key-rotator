@@ -79,7 +79,7 @@ defmodule WgKeyRotator.CLI do
           "ROTATOR_REPO_ROOT" => dry_root,
           "WAHA_SESSION" => "default",
           "WAHA_CHAT_ID" => "dry-run@c.us",
-          "WAHA_BASE_URL" => "http://127.0.0.1:3000"
+          "WAHA_BASE_URL" => "http://127.0.0.1:3006"
         },
         require_waha: false
       )
@@ -123,10 +123,10 @@ defmodule WgKeyRotator.CLI do
 
     required environment for rotate:
       ROTATOR_REPO_ROOT
-      WAHA_BASE_URL
       WAHA_CHAT_ID
 
     optional environment:
+      WAHA_BASE_URL (default: http://127.0.0.1:3006)
       WAHA_SESSION
       WAHA_API_KEY
       ROTATOR_INCLUDE_PUBLIC_KEY

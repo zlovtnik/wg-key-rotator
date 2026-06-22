@@ -12,8 +12,9 @@ defmodule WgKeyRotator.KeygenTest do
         assert opts[:stderr_to_stdout]
         {@private_key <> "\n", 0}
 
-      "wg", ["pubkey"], opts ->
-        assert opts[:input] == @private_key <> "\n"
+      "sh", ["-c", cmd], opts ->
+        assert opts[:stderr_to_stdout]
+        assert String.starts_with?(cmd, "wg pubkey < /")
         {@public_key <> "\n", 0}
     end
 

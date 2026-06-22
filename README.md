@@ -26,7 +26,11 @@ Required values:
 - `WAHA_BASE_URL`
 - `WAHA_CHAT_ID`
 
-`ROTATOR_STATE_DIR` defaults to `secrets/wg-rotation` under the target repo. `WAHA_SESSION` defaults to `default`. Set `WAHA_API_KEY_FILE` when WAHA is protected by an API key.
+`ROTATOR_STATE_DIR` defaults to `secrets/wg-rotation` under the target repo. `WAHA_SESSION` defaults to `default`. For host-run commands, `WAHA_BASE_URL` defaults to `http://127.0.0.1:3006`, matching the root compose `rotator` profile's `WAHA_HOST_PORT`. Set `WAHA_API_KEY` or `WAHA_API_KEY_FILE` when WAHA is protected by an API key.
+
+The compose profile defaults WAHA to `devlikeapro/waha` on `linux/amd64` because the Core image does not publish a multi-arch manifest for every host. On native ARM deployments, set `WAHA_IMAGE=devlikeapro/waha:arm` and `WAHA_PLATFORM=linux/arm64`.
+
+For local compose use, WAHA auth is disabled by default with `WAHA_NO_API_KEY=True` because the service binds only to localhost. To protect WAHA, set `WAHA_NO_API_KEY=False`, provide `WAHA_API_KEY`, and pass the same key to the rotator.
 
 ## Run
 
@@ -44,6 +48,13 @@ Scheduled full rotation:
 
 ```sh
 bin/wg_key_rotator rotate --scheduled
+```
+
+With the root compose profile, start WAHA and run the containerized rotator from the repository root:
+
+```sh
+docker compose --profile rotator up -d waha
+docker compose --profile rotator run --rm wg-key-rotator rotate --scheduled
 ```
 
 Manual staged rotation:
