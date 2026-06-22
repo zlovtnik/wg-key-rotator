@@ -2,11 +2,17 @@ defmodule WgKeyRotator.Config do
   alias WgKeyRotator.Error
 
   @app_root Path.expand("../..", __DIR__)
-  @source_repo_root Path.expand("../../../../", __DIR__)
 
   defstruct repo_root: nil,
             private_key_path: nil,
             public_key_path: nil,
+            state_dir: nil,
+            peers: [],
+            migration_timeout_secs: 86_400,
+            handshake_grace_secs: 600,
+            command_timeout_ms: 600_000,
+            frontdoor_config_path: nil,
+            next_admin_port: 3012,
             health_url: "http://127.0.0.1:3002/health",
             health_timeout_ms: 5_000,
             waha_base_url: nil,
@@ -19,6 +25,13 @@ defmodule WgKeyRotator.Config do
           repo_root: String.t(),
           private_key_path: String.t(),
           public_key_path: String.t(),
+          state_dir: String.t(),
+          peers: [String.t()],
+          migration_timeout_secs: pos_integer(),
+          handshake_grace_secs: pos_integer(),
+          command_timeout_ms: pos_integer(),
+          frontdoor_config_path: String.t(),
+          next_admin_port: pos_integer(),
           health_url: String.t(),
           health_timeout_ms: pos_integer(),
           waha_base_url: String.t() | nil,
@@ -40,32 +53,46 @@ defmodule WgKeyRotator.Config do
 
   def load(env, opts) when is_map(env) do
     require_waha = Keyword.get(opts, :require_waha, true)
-    repo_root = repo_root(env, Keyword.get(opts, :cwd, File.cwd!()))
 
-    config = %__MODULE__{
-      repo_root: repo_root,
-      private_key_path:
-        expand_from_root(
-          env["ROTATOR_PRIVATE_KEY_PATH"],
-          repo_root,
-          "config/server/privatekey-server"
-        ),
-      public_key_path:
-        expand_from_root(
-          env["ROTATOR_PUBLIC_KEY_PATH"],
-          repo_root,
-          "config/server/publickey-server"
-        ),
-      health_url: blank_to_nil(env["ROTATOR_HEALTH_URL"]) || "http://127.0.0.1:3002/health",
-      health_timeout_ms: positive_integer(env["ROTATOR_HEALTH_TIMEOUT_MS"], 5_000),
-      waha_base_url: blank_to_nil(env["WAHA_BASE_URL"]),
-      waha_session: blank_to_nil(env["WAHA_SESSION"]) || "default",
-      waha_chat_id: blank_to_nil(env["WAHA_CHAT_ID"]),
-      waha_api_key: blank_to_nil(env["WAHA_API_KEY"]),
-      include_public_key: boolean(env["ROTATOR_INCLUDE_PUBLIC_KEY"], true)
-    }
+    with {:ok, repo_root} <- repo_root(env, Keyword.get(opts, :cwd, File.cwd!())) do
+      config =
+        %__MODULE__{
+          repo_root: repo_root,
+          private_key_path:
+            expand_from_root(
+              env["ROTATOR_PRIVATE_KEY_PATH"],
+              repo_root,
+              "config/server/privatekey-server"
+            ),
+          public_key_path:
+            expand_from_root(
+              env["ROTATOR_PUBLIC_KEY_PATH"],
+              repo_root,
+              "config/server/publickey-server"
+            ),
+          state_dir:
+            expand_from_root(
+              env["ROTATOR_STATE_DIR"],
+              repo_root,
+              "secrets/wg-rotation"
+            ),
+          peers: peers(env["ROTATOR_PEERS"]),
+          migration_timeout_secs: positive_integer(env["ROTATOR_MIGRATION_TIMEOUT_SECS"], 86_400),
+          handshake_grace_secs: positive_integer(env["ROTATOR_HANDSHAKE_GRACE_SECS"], 600),
+          command_timeout_ms: positive_integer(env["ROTATOR_COMMAND_TIMEOUT_MS"], 600_000),
+          next_admin_port: positive_integer(env["ROTATOR_NEXT_ADMIN_PORT"], 3_012),
+          health_url: blank_to_nil(env["ROTATOR_HEALTH_URL"]) || "http://127.0.0.1:3002/health",
+          health_timeout_ms: positive_integer(env["ROTATOR_HEALTH_TIMEOUT_MS"], 5_000),
+          waha_base_url: blank_to_nil(env["WAHA_BASE_URL"]) || "http://127.0.0.1:3006",
+          waha_session: blank_to_nil(env["WAHA_SESSION"]) || "default",
+          waha_chat_id: blank_to_nil(env["WAHA_CHAT_ID"]),
+          waha_api_key: secret(env, "WAHA_API_KEY", "WAHA_API_KEY_FILE"),
+          include_public_key: boolean(env["ROTATOR_INCLUDE_PUBLIC_KEY"], true)
+        }
+        |> put_frontdoor_config_path(env)
 
-    validate(config, require_waha)
+      validate(config, require_waha)
+    end
   end
 
   defp dotenv_env(path) do
@@ -126,8 +153,8 @@ defmodule WgKeyRotator.Config do
 
   defp repo_root(env, cwd) do
     case blank_to_nil(env["ROTATOR_REPO_ROOT"]) do
-      nil -> discover_repo_root(cwd) || @source_repo_root
-      path -> Path.expand(path)
+      nil -> discover_repo_root(cwd)
+      path -> {:ok, Path.expand(path)}
     end
   end
 
@@ -139,6 +166,18 @@ defmodule WgKeyRotator.Config do
       File.exists?(Path.join(dir, "docker-compose.yaml")) and
         File.dir?(Path.join(dir, "config/server"))
     end)
+    |> case do
+      nil ->
+        {:error,
+         %Error{
+           step: :repo_root,
+           message: "could not discover repository root",
+           details: "set ROTATOR_REPO_ROOT or run from inside the ssl-proxy checkout"
+         }}
+
+      repo_root ->
+        {:ok, repo_root}
+    end
   end
 
   defp ancestors(path) do
@@ -156,11 +195,59 @@ defmodule WgKeyRotator.Config do
            require_file(
              Path.join(config.repo_root, "docker-compose.yaml"),
              :repo_root,
-             "missing docker-compose.yaml"
+             "repo root must contain docker-compose.yaml"
            ),
          :ok <- require_present(config.waha_base_url, :waha_base_url, require_waha),
          :ok <- require_present(config.waha_chat_id, :waha_chat_id, require_waha) do
       {:ok, config}
+    end
+  end
+
+  defp put_frontdoor_config_path(%__MODULE__{} = config, env) do
+    path =
+      expand_from_root(
+        env["ROTATOR_FRONTDOOR_CONFIG_PATH"],
+        config.repo_root,
+        Path.relative_to(
+          Path.join(config.state_dir, "frontdoor/wg-udp-frontdoor.toml"),
+          config.repo_root
+        )
+      )
+
+    %{config | frontdoor_config_path: path}
+  end
+
+  defp peers(nil), do: ["peer1", "peer2"]
+  defp peers(""), do: ["peer1", "peer2"]
+
+  defp peers(value) do
+    value
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+    |> case do
+      [] -> ["peer1", "peer2"]
+      peers -> peers
+    end
+  end
+
+  defp secret(env, value_var, file_var) do
+    case blank_to_nil(env[value_var]) do
+      nil -> file_secret(env[file_var])
+      value -> value
+    end
+  end
+
+  defp file_secret(nil), do: nil
+  defp file_secret(""), do: nil
+
+  defp file_secret(path) do
+    path
+    |> Path.expand()
+    |> File.read()
+    |> case do
+      {:ok, value} -> blank_to_nil(value)
+      {:error, _reason} -> nil
     end
   end
 

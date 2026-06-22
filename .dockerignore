@@ -1,0 +1,10 @@
+/_build/
+/deps/
+/cover/
+/doc/
+/rel/
+/.elixir_ls/
+/.git/
+.env
+/secrets/
+erl_crash.dump
