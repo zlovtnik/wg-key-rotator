@@ -14,7 +14,7 @@ defmodule WgKeyRotator.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :inets, :ssl]
+      extra_applications: [:logger, :crypto, :inets, :ssl]
     ]
   end
 end

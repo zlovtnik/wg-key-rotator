@@ -1,14 +1,17 @@
 # WireGuard Key Rotator
 
-Small one-shot Elixir app for daily WireGuard server key rotation in the local Docker Compose stack.
+Small Elixir controller for scheduled WireGuard security rotation in the local Docker Compose stack.
 
-It rotates `config/server/privatekey-server` and `config/server/publickey-server`, runs:
+It can still run the legacy one-shot server-key rotation, but the preferred flow is now staged:
 
 ```sh
-docker compose up -d --build ssl-proxy
+bin/wg_key_rotator stage
+bin/wg_key_rotator start-next
+bin/wg_key_rotator status
+bin/wg_key_rotator promote
 ```
 
-Then it checks `http://127.0.0.1:3002/health` and sends a WAHA `POST /api/sendText` notification.
+`rotate --scheduled` is the cron-safe wrapper: it stages and starts a candidate when no generation is pending, and promotes only after every configured peer has a recent candidate handshake.
 
 ## Configure
 
@@ -23,7 +26,7 @@ Required values:
 - `WAHA_BASE_URL`
 - `WAHA_CHAT_ID`
 
-`WAHA_SESSION` defaults to `default`. Set `WAHA_API_KEY` when WAHA is protected by an API key.
+`ROTATOR_STATE_DIR` defaults to `secrets/wg-rotation` under the target repo. `WAHA_SESSION` defaults to `default`. Set `WAHA_API_KEY_FILE` when WAHA is protected by an API key.
 
 ## Run
 
@@ -35,6 +38,27 @@ or:
 
 ```sh
 bin/wg_key_rotator rotate
+```
+
+Scheduled full rotation:
+
+```sh
+bin/wg_key_rotator rotate --scheduled
+```
+
+Manual staged rotation:
+
+```sh
+bin/wg_key_rotator stage
+bin/wg_key_rotator start-next
+bin/wg_key_rotator status
+bin/wg_key_rotator promote
+```
+
+Rollback disables the candidate frontdoor backends and stops `ssl-proxy-next`:
+
+```sh
+bin/wg_key_rotator rollback
 ```
 
 Dry run writes generated keys under a temporary directory and stubs deploy and WhatsApp:

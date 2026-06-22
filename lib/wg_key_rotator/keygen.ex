@@ -12,6 +12,35 @@ defmodule WgKeyRotator.Keygen do
     end
   end
 
+  def generate_psk(runner \\ &Command.system_runner/3) do
+    runner
+    |> Command.run("wg", ["genpsk"], [stderr_to_stdout: true], :preshared_key_generation)
+    |> trim_output()
+    |> case do
+      {:ok, preshared_key} ->
+        with :ok <- validate_key(preshared_key, :preshared_key) do
+          {:ok, preshared_key}
+        end
+
+      error ->
+        error
+    end
+  end
+
+  def random_secret(bytes \\ 32, encoding \\ :url_base64)
+
+  def random_secret(bytes, :url_base64) when is_integer(bytes) and bytes > 0 do
+    bytes
+    |> :crypto.strong_rand_bytes()
+    |> Base.url_encode64(padding: false)
+  end
+
+  def random_secret(bytes, :base64) when is_integer(bytes) and bytes > 0 do
+    bytes
+    |> :crypto.strong_rand_bytes()
+    |> Base.encode64()
+  end
+
   defp genkey(runner) do
     runner
     |> Command.run("wg", ["genkey"], [stderr_to_stdout: true], :key_generation)
