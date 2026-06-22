@@ -121,8 +121,12 @@ defmodule WgKeyRotator.CLI do
       wg_key_rotator promote
       wg_key_rotator rollback
 
-    required environment for rotate:
+    required environment for legacy rotate:
       WAHA_CHAT_ID
+
+    staged rotation commands:
+      rotate --scheduled, stage, start-next, status, promote, rollback
+      WAHA settings are optional; notifications are sent only when configured.
 
     optional environment:
       ROTATOR_REPO_ROOT (auto-discovered when run inside the repo)
@@ -135,6 +139,7 @@ defmodule WgKeyRotator.CLI do
       ROTATOR_PEERS
       ROTATOR_MIGRATION_TIMEOUT_SECS
       ROTATOR_HANDSHAKE_GRACE_SECS
+      ROTATOR_COMMAND_TIMEOUT_MS
       ROTATOR_FRONTDOOR_CONFIG_PATH
       ROTATOR_NEXT_ADMIN_PORT
     """

@@ -31,8 +31,8 @@ defmodule WgKeyRotatorTest do
         {@private_key <> "\n", 0}
 
       "sh", ["-c", cmd], _opts ->
-        assert String.starts_with?(cmd, "wg pubkey < /")
-        tmp_path = String.trim_leading(cmd, "wg pubkey < ")
+        assert "wg pubkey < '" <> quoted_path = cmd
+        tmp_path = String.trim_trailing(quoted_path, "'")
         private_key = File.read!(tmp_path) |> String.trim()
         assert private_key == @private_key
         {@public_key <> "\n", 0}

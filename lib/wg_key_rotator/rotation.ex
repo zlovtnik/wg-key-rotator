@@ -49,7 +49,11 @@ defmodule WgKeyRotator.Rotation do
                "ssl-proxy-next",
                "wg-udp-frontdoor"
              ],
-             [cd: config.repo_root, stderr_to_stdout: true],
+             [
+               cd: config.repo_root,
+               stderr_to_stdout: true,
+               timeout_ms: config.command_timeout_ms
+             ],
              :start_next
            ) do
       result = %{generation_id: generation_id, status: :candidate_started, output: output}
@@ -491,7 +495,7 @@ defmodule WgKeyRotator.Rotation do
            runner,
            "docker",
            ["compose", "--profile", "rotation", "stop", "ssl-proxy-next"],
-           [cd: config.repo_root, stderr_to_stdout: true],
+           [cd: config.repo_root, stderr_to_stdout: true, timeout_ms: config.command_timeout_ms],
            :stop_next
          ) do
       {:ok, _output} -> :ok
@@ -538,7 +542,7 @@ defmodule WgKeyRotator.Rotation do
       runner,
       "docker",
       ["compose", "exec", "-T", "ssl-proxy-next", "/app/ssl-proxy", "boringtun", "dump", "wg1"],
-      [cd: config.repo_root, stderr_to_stdout: true],
+      [cd: config.repo_root, stderr_to_stdout: true, timeout_ms: config.command_timeout_ms],
       :candidate_dump
     )
   end

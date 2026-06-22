@@ -50,15 +50,13 @@ defmodule WgKeyRotator.Keygen do
   defp pubkey(runner, private_key) do
     # Write the private key to a temp file and pipe it into wg pubkey.
     # We avoid System.cmd's :input option because it requires OTP 26+.
-    tmp_path = temp_path()
-
-    case File.write(tmp_path, private_key <> "\n") do
-      :ok ->
+    case write_temp_private_key(private_key) do
+      {:ok, tmp_path} ->
         result =
           runner
           |> Command.run(
             "sh",
-            ["-c", "wg pubkey < #{tmp_path}"],
+            ["-c", "wg pubkey < #{shell_quote(tmp_path)}"],
             [stderr_to_stdout: true],
             :public_key_derivation
           )
@@ -77,8 +75,31 @@ defmodule WgKeyRotator.Keygen do
     end
   end
 
+  defp write_temp_private_key(private_key, attempts \\ 10)
+  defp write_temp_private_key(_private_key, 0), do: {:error, :eexist}
+
+  defp write_temp_private_key(private_key, attempts) do
+    tmp_path = temp_path()
+
+    case File.open(tmp_path, [:write, :exclusive, :binary], fn io ->
+           with :ok <- File.chmod(tmp_path, 0o600) do
+             IO.binwrite(io, private_key <> "\n")
+           end
+         end) do
+      {:ok, :ok} -> {:ok, tmp_path}
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:error, :eexist} -> write_temp_private_key(private_key, attempts - 1)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp temp_path do
-    Path.join(System.tmp_dir!(), "wgk-#{System.unique_integer([:positive])}")
+    random = :crypto.strong_rand_bytes(16) |> Base.url_encode64(padding: false)
+    Path.join(System.tmp_dir!(), "wgk-#{random}")
+  end
+
+  defp shell_quote(value) do
+    "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
   end
 
   defp trim_output({:ok, output}), do: {:ok, String.trim(output)}

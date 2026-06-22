@@ -5,7 +5,7 @@ default: help
 # Run a full key rotation (requires WAHA_CHAT_ID)
 rotate:
 	@echo "=== wg-key-rotator: rotate ==="
-	mix run -e 'WgKeyRotator.CLI.rotate()'
+	mix run -e 'WgKeyRotator.CLI.main(["rotate"])'
 
 # Dry-run: preview changes without executing them
 rotate-dry-run:

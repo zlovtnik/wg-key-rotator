@@ -100,7 +100,8 @@ defmodule WgKeyRotator.RotationTest do
   end
 
   test "scheduled run does not stage another generation while one is pending" do
-    {_root, config} = repo_config()
+    {root, config} = repo_config()
+    on_exit(fn -> File.rm_rf(root) end)
 
     assert {:ok, _} =
              Rotation.stage(config, runner: key_runner(), generation_id: "gen1", now: @now)
@@ -240,7 +241,8 @@ defmodule WgKeyRotator.RotationTest do
 
       "sh", ["-c", cmd], _opts ->
         # wg pubkey < tmp_path -> reads key from temp file written by Keygen.pubkey/2
-        tmp_path = String.trim_leading(cmd, "wg pubkey < ")
+        "wg pubkey < '" <> quoted_path = cmd
+        tmp_path = String.trim_trailing(quoted_path, "'")
         private_key = File.read!(tmp_path) |> String.trim()
         {Map.fetch!(pubkeys, private_key) <> "\n", 0}
 

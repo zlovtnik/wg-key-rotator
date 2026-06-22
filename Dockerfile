@@ -28,5 +28,9 @@ COPY lib ./lib
 RUN mix escript.build \
     && install -m 0755 wg_key_rotator /usr/local/bin/wg_key_rotator
 
+RUN useradd -r -g root -d /app -s /usr/sbin/nologin rotator
+
+USER rotator
+
 ENTRYPOINT ["/usr/local/bin/wg_key_rotator"]
 CMD ["status"]

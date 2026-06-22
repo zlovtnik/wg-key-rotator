@@ -4,4 +4,4 @@
 # The scheduled command stages a candidate or promotes the existing candidate
 # only after every configured peer has a recent handshake on ssl-proxy-next.
 PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin
-0 6 * * * cd /path/to/ssl-proxy/apps/wg-key-rotator && ROTATOR_REPO_ROOT=/path/to/ssl-proxy bin/wg_key_rotator rotate --scheduled >> /tmp/wg-key-rotator.log 2>&1
+0 6 * * * cd /path/to/ssl-proxy/apps/wg-key-rotator && set -a && . ./.env && set +a && ROTATOR_REPO_ROOT=/path/to/ssl-proxy bin/wg_key_rotator rotate --scheduled >> /tmp/wg-key-rotator.log 2>&1

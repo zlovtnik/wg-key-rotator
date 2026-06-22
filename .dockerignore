@@ -6,4 +6,5 @@
 /.elixir_ls/
 /.git/
 .env
+/secrets/
 erl_crash.dump

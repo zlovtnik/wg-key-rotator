@@ -18,7 +18,7 @@ defmodule WgKeyRotator.Deploy do
       runner,
       "docker",
       ["compose", "up", "-d", "--build", "ssl-proxy"],
-      [cd: config.repo_root, stderr_to_stdout: true],
+      [cd: config.repo_root, stderr_to_stdout: true, timeout_ms: config.command_timeout_ms],
       :deploy
     )
   end
@@ -28,7 +28,7 @@ defmodule WgKeyRotator.Deploy do
       runner,
       "docker",
       ["compose", "ps", "ssl-proxy"],
-      [cd: config.repo_root, stderr_to_stdout: true],
+      [cd: config.repo_root, stderr_to_stdout: true, timeout_ms: config.command_timeout_ms],
       :compose_ps
     )
   end

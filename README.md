@@ -25,7 +25,7 @@ Required values:
 - `WAHA_BASE_URL`
 - `WAHA_CHAT_ID`
 
-`ROTATOR_REPO_ROOT` is optional when commands run inside the `ssl-proxy` checkout; otherwise set it to the absolute repo path. `ROTATOR_STATE_DIR` defaults to `secrets/wg-rotation` under the target repo. `WAHA_SESSION` defaults to `default`. For host-run commands, `WAHA_BASE_URL` defaults to `http://127.0.0.1:3006`, matching the root compose `rotator` profile's `WAHA_HOST_PORT`. Set `WAHA_API_KEY` or `WAHA_API_KEY_FILE` when WAHA is protected by an API key.
+`ROTATOR_REPO_ROOT` is optional when commands run inside the `ssl-proxy` checkout; otherwise set it to the absolute repo path. `ROTATOR_STATE_DIR` defaults to `secrets/wg-rotation` under the target repo. `ROTATOR_COMMAND_TIMEOUT_MS` bounds each Docker command and defaults to `600000` (10 minutes). `WAHA_SESSION` defaults to `default`. For host-run commands, `WAHA_BASE_URL` defaults to `http://127.0.0.1:3006`, matching the root compose `rotator` profile's `WAHA_HOST_PORT`. Set `WAHA_API_KEY` or `WAHA_API_KEY_FILE` when WAHA is protected by an API key.
 
 The compose profile defaults WAHA to `devlikeapro/waha` on `linux/amd64` because the Core image does not publish a multi-arch manifest for every host. On native ARM deployments, set `WAHA_IMAGE=devlikeapro/waha:arm` and `WAHA_PLATFORM=linux/arm64`.
 

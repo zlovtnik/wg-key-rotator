@@ -58,7 +58,7 @@ defmodule WgKeyRotator.PeerConfig do
   defp append_value(contents, section, key, value) do
     lines = String.split(contents, "\n")
 
-    {updated, _current, inserted} =
+    {updated, current, inserted} =
       Enum.reduce(lines, {[], nil, false}, fn line, {acc, current, inserted} ->
         cond do
           inserted ->
@@ -76,10 +76,15 @@ defmodule WgKeyRotator.PeerConfig do
       end)
 
     updated =
-      if inserted do
-        updated
-      else
-        ["#{key} = #{value}", "[#{section}]" | updated]
+      cond do
+        inserted ->
+          updated
+
+        current == section ->
+          ["#{key} = #{value}" | updated]
+
+        true ->
+          ["#{key} = #{value}", "[#{section}]" | updated]
       end
 
     updated
