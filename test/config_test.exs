@@ -36,6 +36,35 @@ defmodule WgKeyRotator.ConfigTest do
     refute config.include_public_key
   end
 
+  test "discovers repo root from current working directory" do
+    root = tmp_repo()
+    on_exit(fn -> File.rm_rf(root) end)
+
+    cwd = Path.join(root, "apps/wg-key-rotator")
+    File.mkdir_p!(cwd)
+    File.mkdir_p!(Path.join(root, "config/server"))
+    File.touch!(Path.join(root, "docker-compose.yaml"))
+
+    env = %{
+      "WAHA_BASE_URL" => "http://waha.local",
+      "WAHA_CHAT_ID" => "12132132130@c.us"
+    }
+
+    assert {:ok, config} = Config.load(env, cwd: cwd)
+    assert config.repo_root == root
+  end
+
+  test "returns a clear error when repo root cannot be discovered" do
+    root = tmp_repo()
+    on_exit(fn -> File.rm_rf(root) end)
+    File.mkdir_p!(root)
+
+    assert {:error, error} = Config.load(%{}, cwd: root, require_waha: false)
+    assert error.step == :repo_root
+    assert error.message == "could not discover repository root"
+    assert error.details =~ "ROTATOR_REPO_ROOT"
+  end
+
   test "loads WAHA API key from file" do
     root = tmp_repo()
     on_exit(fn -> File.rm_rf(root) end)

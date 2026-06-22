@@ -2,7 +2,6 @@ defmodule WgKeyRotator.Config do
   alias WgKeyRotator.Error
 
   @app_root Path.expand("../..", __DIR__)
-  @source_repo_root Path.expand("../../../../", __DIR__)
 
   defstruct repo_root: nil,
             private_key_path: nil,
@@ -52,44 +51,45 @@ defmodule WgKeyRotator.Config do
 
   def load(env, opts) when is_map(env) do
     require_waha = Keyword.get(opts, :require_waha, true)
-    repo_root = repo_root(env, Keyword.get(opts, :cwd, File.cwd!()))
 
-    config =
-      %__MODULE__{
-        repo_root: repo_root,
-        private_key_path:
-          expand_from_root(
-            env["ROTATOR_PRIVATE_KEY_PATH"],
-            repo_root,
-            "config/server/privatekey-server"
-          ),
-        public_key_path:
-          expand_from_root(
-            env["ROTATOR_PUBLIC_KEY_PATH"],
-            repo_root,
-            "config/server/publickey-server"
-          ),
-        state_dir:
-          expand_from_root(
-            env["ROTATOR_STATE_DIR"],
-            repo_root,
-            "secrets/wg-rotation"
-          ),
-        peers: peers(env["ROTATOR_PEERS"]),
-        migration_timeout_secs: positive_integer(env["ROTATOR_MIGRATION_TIMEOUT_SECS"], 86_400),
-        handshake_grace_secs: positive_integer(env["ROTATOR_HANDSHAKE_GRACE_SECS"], 600),
-        next_admin_port: positive_integer(env["ROTATOR_NEXT_ADMIN_PORT"], 3_012),
-        health_url: blank_to_nil(env["ROTATOR_HEALTH_URL"]) || "http://127.0.0.1:3002/health",
-        health_timeout_ms: positive_integer(env["ROTATOR_HEALTH_TIMEOUT_MS"], 5_000),
-        waha_base_url: blank_to_nil(env["WAHA_BASE_URL"]) || "http://127.0.0.1:3006",
-        waha_session: blank_to_nil(env["WAHA_SESSION"]) || "default",
-        waha_chat_id: blank_to_nil(env["WAHA_CHAT_ID"]),
-        waha_api_key: secret(env, "WAHA_API_KEY", "WAHA_API_KEY_FILE"),
-        include_public_key: boolean(env["ROTATOR_INCLUDE_PUBLIC_KEY"], true)
-      }
-      |> put_frontdoor_config_path(env)
+    with {:ok, repo_root} <- repo_root(env, Keyword.get(opts, :cwd, File.cwd!())) do
+      config =
+        %__MODULE__{
+          repo_root: repo_root,
+          private_key_path:
+            expand_from_root(
+              env["ROTATOR_PRIVATE_KEY_PATH"],
+              repo_root,
+              "config/server/privatekey-server"
+            ),
+          public_key_path:
+            expand_from_root(
+              env["ROTATOR_PUBLIC_KEY_PATH"],
+              repo_root,
+              "config/server/publickey-server"
+            ),
+          state_dir:
+            expand_from_root(
+              env["ROTATOR_STATE_DIR"],
+              repo_root,
+              "secrets/wg-rotation"
+            ),
+          peers: peers(env["ROTATOR_PEERS"]),
+          migration_timeout_secs: positive_integer(env["ROTATOR_MIGRATION_TIMEOUT_SECS"], 86_400),
+          handshake_grace_secs: positive_integer(env["ROTATOR_HANDSHAKE_GRACE_SECS"], 600),
+          next_admin_port: positive_integer(env["ROTATOR_NEXT_ADMIN_PORT"], 3_012),
+          health_url: blank_to_nil(env["ROTATOR_HEALTH_URL"]) || "http://127.0.0.1:3002/health",
+          health_timeout_ms: positive_integer(env["ROTATOR_HEALTH_TIMEOUT_MS"], 5_000),
+          waha_base_url: blank_to_nil(env["WAHA_BASE_URL"]) || "http://127.0.0.1:3006",
+          waha_session: blank_to_nil(env["WAHA_SESSION"]) || "default",
+          waha_chat_id: blank_to_nil(env["WAHA_CHAT_ID"]),
+          waha_api_key: secret(env, "WAHA_API_KEY", "WAHA_API_KEY_FILE"),
+          include_public_key: boolean(env["ROTATOR_INCLUDE_PUBLIC_KEY"], true)
+        }
+        |> put_frontdoor_config_path(env)
 
-    validate(config, require_waha)
+      validate(config, require_waha)
+    end
   end
 
   defp dotenv_env(path) do
@@ -150,8 +150,8 @@ defmodule WgKeyRotator.Config do
 
   defp repo_root(env, cwd) do
     case blank_to_nil(env["ROTATOR_REPO_ROOT"]) do
-      nil -> discover_repo_root(cwd) || @source_repo_root
-      path -> Path.expand(path)
+      nil -> discover_repo_root(cwd)
+      path -> {:ok, Path.expand(path)}
     end
   end
 
@@ -163,6 +163,18 @@ defmodule WgKeyRotator.Config do
       File.exists?(Path.join(dir, "docker-compose.yaml")) and
         File.dir?(Path.join(dir, "config/server"))
     end)
+    |> case do
+      nil ->
+        {:error,
+         %Error{
+           step: :repo_root,
+           message: "could not discover repository root",
+           details: "set ROTATOR_REPO_ROOT or run from inside the ssl-proxy checkout"
+         }}
+
+      repo_root ->
+        {:ok, repo_root}
+    end
   end
 
   defp ancestors(path) do
@@ -180,7 +192,7 @@ defmodule WgKeyRotator.Config do
            require_file(
              Path.join(config.repo_root, "docker-compose.yaml"),
              :repo_root,
-             "missing docker-compose.yaml"
+             "repo root must contain docker-compose.yaml"
            ),
          :ok <- require_present(config.waha_base_url, :waha_base_url, require_waha),
          :ok <- require_present(config.waha_chat_id, :waha_chat_id, require_waha) do

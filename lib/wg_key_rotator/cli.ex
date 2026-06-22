@@ -122,10 +122,10 @@ defmodule WgKeyRotator.CLI do
       wg_key_rotator rollback
 
     required environment for rotate:
-      ROTATOR_REPO_ROOT
       WAHA_CHAT_ID
 
     optional environment:
+      ROTATOR_REPO_ROOT (auto-discovered when run inside the repo)
       WAHA_BASE_URL (default: http://127.0.0.1:3006)
       WAHA_SESSION
       WAHA_API_KEY
