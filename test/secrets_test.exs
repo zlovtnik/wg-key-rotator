@@ -105,7 +105,7 @@ defmodule WgKeyRotator.SecretsTest do
     on_exit(fn -> File.rm_rf(root) end)
 
     assert {:ok, _output} = Secrets.generate(root)
-    assert {:ok, output} = Secrets.env(root)
+    assert {:ok, output} = Secrets.env(root, %{"SERVER_IP" => "192.168.1.221"})
     assert output =~ ".env"
 
     env = File.read!(Path.join(root, ".env"))
@@ -117,10 +117,25 @@ defmodule WgKeyRotator.SecretsTest do
     assert env =~ "WAHA_NO_API_KEY=False"
     assert env =~ "WAHA_DASHBOARD_NO_PASSWORD=False"
     assert env =~ "WHATSAPP_SWAGGER_NO_PASSWORD=False"
-    assert env =~ "REGISTRY=<server-local-ip>:5000"
+    assert env =~ "REGISTRY=192.168.1.221:5000"
     assert env =~ "IMAGE_TAG=latest"
     assert env =~ "ADMIN_API_KEY_FILE=/run/local-secrets/admin_api_key"
     assert mode(Path.join(root, ".env")) == 0o600
+  end
+
+  test "env rejects missing or placeholder compose registry" do
+    root = tmp_repo()
+    on_exit(fn -> File.rm_rf(root) end)
+
+    assert {:ok, _output} = Secrets.generate(root)
+
+    assert {:error, error} = Secrets.env(root, %{})
+    assert error.step == :secret_env
+    assert error.message =~ "REGISTRY or SERVER_IP is required"
+
+    assert {:error, error} = Secrets.env(root, %{"REGISTRY" => "<server-local-ip>:5000"})
+    assert error.step == :secret_env
+    assert error.message =~ "REGISTRY contains an unresolved placeholder"
   end
 
   test "env honors compose image overrides" do

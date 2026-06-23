@@ -114,6 +114,28 @@ defmodule WgKeyRotator.RotationTest do
     assert opts[:cd] == root
   end
 
+  test "start-next rejects placeholder compose registry before docker pull" do
+    {root, config} = repo_config()
+    on_exit(fn -> File.rm_rf(root) end)
+
+    assert {:ok, _} =
+             Rotation.stage(config, runner: key_runner(), generation_id: "gen1", now: @now)
+
+    File.write!(Path.join(root, ".env"), "REGISTRY=<server-local-ip>:5000\nIMAGE_TAG=latest\n")
+
+    assert {:error, error} =
+             Rotation.start_next(config,
+               compose_env: %{},
+               runner: fn command, _args, _opts ->
+                 flunk("unexpected docker command: #{command}")
+               end
+             )
+
+    assert error.step == :compose_env
+    assert error.message =~ "REGISTRY contains an unresolved placeholder"
+    assert error.details =~ "SERVER_IP=<server-local-ip>"
+  end
+
   test "scheduled run does not stage another generation while one is pending" do
     {root, config} = repo_config()
     on_exit(fn -> File.rm_rf(root) end)
@@ -242,6 +264,7 @@ defmodule WgKeyRotator.RotationTest do
     File.mkdir_p!(Path.join(root, "config/peer2"))
     File.mkdir_p!(Path.join(root, "config/server"))
     File.touch!(Path.join(root, "docker-compose.yaml"))
+    File.write!(Path.join(root, ".env"), "REGISTRY=192.168.1.221:5000\nIMAGE_TAG=latest\n")
 
     File.write!(Path.join(root, "config/peer1/peer1.conf"), peer_conf("10.13.13.2/32"))
 
