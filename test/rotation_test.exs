@@ -93,9 +93,20 @@ defmodule WgKeyRotator.RotationTest do
                       "compose",
                       "--profile",
                       "rotation",
+                      "pull",
+                      "ssl-proxy-next",
+                      "wg-udp-frontdoor"
+                    ], pull_opts}
+
+    assert pull_opts[:cd] == root
+
+    assert_receive {:command, "docker",
+                    [
+                      "compose",
+                      "--profile",
+                      "rotation",
                       "up",
                       "-d",
-                      "--build",
                       "ssl-proxy-next",
                       "wg-udp-frontdoor"
                     ], opts}
@@ -160,9 +171,20 @@ defmodule WgKeyRotator.RotationTest do
                       "compose",
                       "--profile",
                       "rotation",
+                      "pull",
+                      "ssl-proxy-next",
+                      "wg-udp-frontdoor"
+                    ], pull_opts}
+
+    assert pull_opts[:cd] == root
+
+    assert_receive {:command, "docker",
+                    [
+                      "compose",
+                      "--profile",
+                      "rotation",
                       "up",
                       "-d",
-                      "--build",
                       "ssl-proxy-next",
                       "wg-udp-frontdoor"
                     ], opts}
@@ -308,7 +330,10 @@ defmodule WgKeyRotator.RotationTest do
 
   defp docker_runner do
     fn
-      "docker", ["compose", "up", "-d", "--build", "ssl-proxy"], _opts ->
+      "docker", ["compose", "pull", "ssl-proxy"], _opts ->
+        {"pull ok", 0}
+
+      "docker", ["compose", "up", "-d", "ssl-proxy"], _opts ->
         {"deploy ok", 0}
 
       "docker", ["compose", "ps", "ssl-proxy"], _opts ->

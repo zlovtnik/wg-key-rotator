@@ -13,7 +13,11 @@ defmodule WgKeyRotator.DeployTest do
     }
 
     runner = fn
-      "docker", ["compose", "up", "-d", "--build", "ssl-proxy"], opts ->
+      "docker", ["compose", "pull", "ssl-proxy"], opts ->
+        assert opts[:cd] == root
+        {"pull ok", 0}
+
+      "docker", ["compose", "up", "-d", "ssl-proxy"], opts ->
         assert opts[:cd] == root
         {"deploy ok", 0}
 
@@ -29,7 +33,7 @@ defmodule WgKeyRotator.DeployTest do
     end
 
     assert {:ok, result} = Deploy.run(config, runner: runner, health_get: health_get)
-    assert result.deploy_output == "deploy ok"
+    assert result.deploy_output == "pull ok\ndeploy ok"
     assert result.health.status == 200
   end
 end

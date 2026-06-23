@@ -36,31 +36,37 @@ defmodule WgKeyRotator.Rotation do
     with {:ok, generation_id} <- pending_generation(config),
          :ok <- ensure_active_runtime_secrets(config),
          :ok <- install_frontdoor_config(config, generation_id, :candidate),
-         {:ok, output} <-
-           Command.run(
-             runner,
-             "docker",
-             [
-               "compose",
-               "--profile",
-               "rotation",
-               "up",
-               "-d",
-               "--build",
-               "ssl-proxy-next",
-               "wg-udp-frontdoor"
-             ],
-             [
-               cd: config.repo_root,
-               stderr_to_stdout: true,
-               timeout_ms: config.command_timeout_ms
-             ],
-             :start_next
-           ) do
-      result = %{generation_id: generation_id, status: :candidate_started, output: output}
+         {:ok, pull_output} <- pull_next_runtime(config, runner),
+         {:ok, start_output} <- start_next_runtime(config, runner) do
+      result = %{
+        generation_id: generation_id,
+        status: :candidate_started,
+        output: join_output(pull_output, start_output)
+      }
+
       notify_event(config, result, opts)
       {:ok, result}
     end
+  end
+
+  defp pull_next_runtime(config, runner) do
+    Command.run(
+      runner,
+      "docker",
+      ["compose", "--profile", "rotation", "pull", "ssl-proxy-next", "wg-udp-frontdoor"],
+      [cd: config.repo_root, stderr_to_stdout: true, timeout_ms: config.command_timeout_ms],
+      :pull_next
+    )
+  end
+
+  defp start_next_runtime(config, runner) do
+    Command.run(
+      runner,
+      "docker",
+      ["compose", "--profile", "rotation", "up", "-d", "ssl-proxy-next", "wg-udp-frontdoor"],
+      [cd: config.repo_root, stderr_to_stdout: true, timeout_ms: config.command_timeout_ms],
+      :start_next
+    )
   end
 
   def status(%Config{} = config, opts \\ []) do
@@ -790,6 +796,12 @@ defmodule WgKeyRotator.Rotation do
 
   defp ensure_trailing_newline(contents) do
     if String.ends_with?(contents, "\n"), do: contents, else: contents <> "\n"
+  end
+
+  defp join_output(first, second) do
+    [first, second]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("\n")
   end
 
   defp notify_event(config, result, opts) do
