@@ -86,9 +86,15 @@ defmodule WgKeyRotator.Command do
       |> maybe_put_keyword(opts, :env)
 
     {:ok, Port.open({:spawn_executable, executable}, port_opts)}
-  rescue
-    error in [ArgumentError, ErlangError] ->
-      {:error, Exception.message(error)}
+  catch
+    :error, reason ->
+      {:error, exception_message(reason, __STACKTRACE__)}
+  end
+
+  defp exception_message(reason, stacktrace) do
+    reason
+    |> Exception.normalize(:error, stacktrace)
+    |> Exception.message()
   end
 
   defp maybe_put(opts, _option, false), do: opts

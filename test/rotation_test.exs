@@ -152,6 +152,7 @@ defmodule WgKeyRotator.RotationTest do
 
     assert {:ok, result} =
              Rotation.scheduled(config,
+               now_epoch: DateTime.to_unix(@now) + 100,
                runner: runner,
                dump_fun: fn ->
                  {:error,

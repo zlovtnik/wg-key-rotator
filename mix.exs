@@ -13,9 +13,13 @@ defmodule WgKeyRotator.MixProject do
   end
 
   defp deps do
-    [
-      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
-    ]
+    case Mix.env() do
+      env when env in [:dev, :test] ->
+        [{:credo, "~> 1.7", runtime: false}]
+
+      _ ->
+        []
+    end
   end
 
   def application do
