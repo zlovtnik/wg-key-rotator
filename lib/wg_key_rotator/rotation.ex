@@ -34,6 +34,7 @@ defmodule WgKeyRotator.Rotation do
     runner = Keyword.get(opts, :runner, &Command.system_runner/3)
 
     with {:ok, generation_id} <- pending_generation(config),
+         :ok <- ensure_active_runtime_secrets(config),
          :ok <- install_frontdoor_config(config, generation_id, :candidate),
          {:ok, output} <-
            Command.run(
@@ -131,11 +132,21 @@ defmodule WgKeyRotator.Rotation do
     case pending_generation(config) do
       {:ok, generation_id} ->
         with :ok <- ensure_not_expired(config, generation_id, opts),
-             {:ok, migration} <- migration_status(config, generation_id, opts) do
-          if Enum.all?(migration.peers, & &1.migrated?) do
-            promote(config, opts)
-          else
-            {:ok, %{generation_id: generation_id, status: :pending, migration: migration}}
+             :ok <- ensure_active_runtime_secrets(config) do
+          case migration_status(config, generation_id, opts) do
+            {:ok, migration} ->
+              if Enum.all?(migration.peers, & &1.migrated?) do
+                promote(config, opts)
+              else
+                {:ok, %{generation_id: generation_id, status: :pending, migration: migration}}
+              end
+
+            {:error, error} ->
+              if candidate_unavailable?(error) do
+                start_next(config, opts)
+              else
+                {:error, error}
+              end
           end
         end
 
@@ -413,6 +424,31 @@ defmodule WgKeyRotator.Rotation do
     end
   end
 
+  defp ensure_active_runtime_secrets(config) do
+    with :ok <-
+           ensure_secret_file(
+             Path.join(config.repo_root, "secrets/admin_api_key"),
+             fn -> Keygen.random_secret(32, :url_base64) <> "\n" end,
+             0o400
+           ),
+         :ok <-
+           ensure_secret_file(
+             Path.join(config.repo_root, "secrets/wg_obfuscation_key"),
+             fn -> Keygen.random_secret(32, :base64) <> "\n" end,
+             0o400
+           ) do
+      :ok
+    end
+  end
+
+  defp ensure_secret_file(path, value_fun, mode) do
+    if File.exists?(path) do
+      :ok
+    else
+      write_text(path, value_fun.(), mode)
+    end
+  end
+
   defp mirror_candidate(config, generation_id) do
     source = generation_dir(config, generation_id)
     target = candidate_dir(config)
@@ -546,6 +582,16 @@ defmodule WgKeyRotator.Rotation do
       :candidate_dump
     )
   end
+
+  defp candidate_unavailable?(%Error{step: :candidate_dump, details: details}) do
+    details = to_string(details || "")
+
+    String.contains?(details, "service \"ssl-proxy-next\" is not running") or
+      String.contains?(details, "is restarting") or
+      String.contains?(details, "No such container")
+  end
+
+  defp candidate_unavailable?(_error), do: false
 
   defp candidate_public_keys(config, generation_id) do
     peers =

@@ -3,7 +3,7 @@ defmodule WgKeyRotator.RotationTest do
 
   import Bitwise
 
-  alias WgKeyRotator.{Config, Rotation}
+  alias WgKeyRotator.{Config, Error, Rotation}
 
   @now ~U[2026-06-22 10:00:00Z]
   @server_private Base.encode64(:binary.copy(<<10>>, 32))
@@ -83,6 +83,10 @@ defmodule WgKeyRotator.RotationTest do
     assert result.status == :candidate_started
     assert File.read!(config.frontdoor_config_path) =~ ~s(candidate-443")
     assert File.read!(config.frontdoor_config_path) =~ "enabled = true"
+    assert File.exists?(Path.join(root, "secrets/admin_api_key"))
+    assert File.exists?(Path.join(root, "secrets/wg_obfuscation_key"))
+    assert mode(Path.join(root, "secrets/admin_api_key")) == 0o400
+    assert mode(Path.join(root, "secrets/wg_obfuscation_key")) == 0o400
 
     assert_receive {:command, "docker",
                     [
@@ -117,6 +121,53 @@ defmodule WgKeyRotator.RotationTest do
 
     assert result.status == :pending
     assert result.generation_id == "gen1"
+    assert File.exists?(Path.join(root, "secrets/admin_api_key"))
+    assert File.exists?(Path.join(root, "secrets/wg_obfuscation_key"))
+  end
+
+  test "scheduled run restarts pending candidate when next service is not running" do
+    {root, config} = repo_config()
+    on_exit(fn -> File.rm_rf(root) end)
+
+    assert {:ok, _} =
+             Rotation.stage(config, runner: key_runner(), generation_id: "gen1", now: @now)
+
+    test_pid = self()
+
+    runner = fn command, args, opts ->
+      send(test_pid, {:command, command, args, opts})
+      {"started", 0}
+    end
+
+    assert {:ok, result} =
+             Rotation.scheduled(config,
+               runner: runner,
+               dump_fun: fn ->
+                 {:error,
+                  %Error{
+                    step: :candidate_dump,
+                    message: "docker exited with status 1",
+                    details: "service \"ssl-proxy-next\" is not running"
+                  }}
+               end
+             )
+
+    assert result.status == :candidate_started
+    assert result.generation_id == "gen1"
+
+    assert_receive {:command, "docker",
+                    [
+                      "compose",
+                      "--profile",
+                      "rotation",
+                      "up",
+                      "-d",
+                      "--build",
+                      "ssl-proxy-next",
+                      "wg-udp-frontdoor"
+                    ], opts}
+
+    assert opts[:cd] == root
   end
 
   test "promote enforces all-peer handshake gate then installs active files" do
