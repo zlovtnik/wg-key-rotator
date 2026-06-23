@@ -12,6 +12,7 @@ defmodule WgKeyRotator.SecretsTest do
     {"admin_api_key", 0o400},
     {"wg_obfuscation_key", 0o400},
     {"grafana_admin_password.key", 0o600},
+    {"oracle_password.txt", 0o444},
     {"atheros_api_token_sha256.key", 0o600},
     {"waha/api_key.key", 0o600},
     {"waha/dashboard_password.key", 0o600},
@@ -32,6 +33,8 @@ defmodule WgKeyRotator.SecretsTest do
       assert File.exists?(full_path)
       assert mode(full_path) == expected_mode
     end
+
+    assert mode(Path.join(root, "secrets")) == 0o711
 
     assert File.read!(Path.join(root, "secrets/admin_api_key")) ==
              File.read!(Path.join(root, "secrets/wg-rotation/candidate/secrets/admin_api_key"))
@@ -97,6 +100,30 @@ defmodule WgKeyRotator.SecretsTest do
 
     assert File.read!(candidate_obfuscation) ==
              File.read!(Path.join(root, "secrets/wg_obfuscation_key"))
+  end
+
+  test "repair creates missing Oracle password without rotating existing secrets" do
+    root = tmp_repo()
+    on_exit(fn -> File.rm_rf(root) end)
+
+    assert {:ok, _output} = Secrets.generate(root)
+    File.rm!(Path.join(root, "secrets/ONE_TIME_TOKENS"))
+
+    postgres_path = Path.join(root, "secrets/postgres.key")
+    oracle_path = Path.join(root, "secrets/oracle_password.txt")
+    original_postgres = File.read!(postgres_path)
+    File.rm!(oracle_path)
+    assert :ok = File.chmod(Path.join(root, "secrets"), 0o700)
+
+    assert {:error, error} = Secrets.check(root)
+    assert error.details =~ "MISSING #{oracle_path}"
+
+    assert {:ok, "OK: repaired secret tree"} = Secrets.repair(root)
+    assert {:ok, "OK: secret tree is complete"} = Secrets.check(root)
+    assert File.read!(postgres_path) == original_postgres
+    assert File.exists?(oracle_path)
+    assert mode(oracle_path) == 0o444
+    assert mode(Path.join(root, "secrets")) == 0o711
   end
 
   test "repair preserves pending generation candidate secrets" do

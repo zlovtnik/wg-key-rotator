@@ -54,6 +54,13 @@ defmodule WgKeyRotator.Secrets do
       mode: 0o600
     },
     %{
+      path: "oracle_password.txt",
+      bytes: 32,
+      kind: :secret,
+      mode: 0o444,
+      repair_missing: true
+    },
+    %{
       path: "atheros_api_token_sha256.key",
       bytes: 48,
       kind: :sha256,
@@ -162,6 +169,7 @@ defmodule WgKeyRotator.Secrets do
   def repair(repo_root) do
     with :ok <- ensure_secret_directories(repo_root),
          :ok <- repair_secret_file_modes(repo_root),
+         :ok <- repair_missing_secret_files(repo_root),
          :ok <- repair_copy_files(repo_root) do
       case check(repo_root) do
         {:ok, _output} -> {:ok, "OK: repaired secret tree"}
@@ -271,14 +279,16 @@ defmodule WgKeyRotator.Secrets do
   end
 
   defp write_managed_file(path, contents, mode, force) do
+    dir = Path.dirname(path)
+
     tmp_path =
       Path.join(
-        Path.dirname(path),
+        dir,
         ".#{Path.basename(path)}.#{System.unique_integer([:positive])}.tmp"
       )
 
-    with :ok <- File.mkdir_p(Path.dirname(path)),
-         :ok <- File.chmod(Path.dirname(path), 0o700),
+    with :ok <- File.mkdir_p(dir),
+         :ok <- File.chmod(dir, managed_dir_mode_for_path(dir)),
          :ok <- refuse_existing(path, force),
          :ok <- write_temp(tmp_path, contents, mode),
          :ok <- File.rename(tmp_path, path),
@@ -335,7 +345,7 @@ defmodule WgKeyRotator.Secrets do
 
   defp ensure_secret_dir(dir) do
     case File.mkdir_p(dir) do
-      :ok -> File.chmod(dir, 0o700)
+      :ok -> File.chmod(dir, managed_dir_mode_for_path(dir))
       error -> error
     end
   end
@@ -346,8 +356,13 @@ defmodule WgKeyRotator.Secrets do
         not File.dir?(dir) ->
           ["MISSING_DIR #{dir}" | acc]
 
-        mode(dir) != 0o700 ->
-          ["WRONG_PERMS #{dir} got #{format_mode(mode(dir))} expected 0700" | acc]
+        mode(dir) != managed_dir_mode_for_path(dir) ->
+          expected_mode = managed_dir_mode_for_path(dir)
+
+          [
+            "WRONG_PERMS #{dir} got #{format_mode(mode(dir))} expected #{format_mode(expected_mode)}"
+            | acc
+          ]
 
         true ->
           acc
@@ -400,6 +415,30 @@ defmodule WgKeyRotator.Secrets do
       case result do
         :ok -> {:cont, :ok}
         {:error, reason} -> {:halt, secret_repair_error(path, reason)}
+      end
+    end)
+  end
+
+  defp repair_missing_secret_files(repo_root) do
+    Enum.reduce_while(@secret_specs, :ok, fn spec, :ok ->
+      path = secret_path(repo_root, spec.path)
+
+      result =
+        cond do
+          not Map.get(spec, :repair_missing, false) ->
+            :ok
+
+          File.exists?(path) ->
+            :ok
+
+          true ->
+            {contents, nil} = secret_contents(spec)
+            write_managed_file(path, contents, spec.mode, false)
+        end
+
+      case result do
+        :ok -> {:cont, :ok}
+        {:error, error} -> {:halt, {:error, error}}
       end
     end)
   end
@@ -733,6 +772,18 @@ defmodule WgKeyRotator.Secrets do
     bytes
     |> :crypto.strong_rand_bytes()
     |> Base.url_encode64(padding: false)
+  end
+
+  defp managed_dir_mode_for_path(path) do
+    if top_level_secret_dir?(path) do
+      0o711
+    else
+      0o700
+    end
+  end
+
+  defp top_level_secret_dir?(path) do
+    Path.basename(path) == @secret_dir and not String.contains?(path, "/#{@secret_dir}/")
   end
 
   defp expected_copy_source(repo_root, copy) do
