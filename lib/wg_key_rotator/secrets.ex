@@ -314,9 +314,13 @@ defmodule WgKeyRotator.Secrets do
   end
 
   defp write_temp(path, contents, mode) do
-    case File.write(path, contents, [:exclusive, :binary]) do
-      :ok -> File.chmod(path, mode)
-      error -> error
+    with {:ok, dev} <- File.open(path, [:exclusive, :write, :binary]),
+         :ok <- File.chmod(path, mode) do
+      IO.binwrite(dev, contents)
+      File.close(dev)
+      :ok
+    else
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -390,11 +394,21 @@ defmodule WgKeyRotator.Secrets do
         acc
         |> check_file(target, copy.mode)
 
-      if File.exists?(source) and File.exists?(target) and
-           File.read!(source) != File.read!(target) do
-        ["MISMATCH #{target} does not match #{source}" | acc]
-      else
-        acc
+      cond do
+        not File.exists?(source) ->
+          ["MISSING_COPY_SOURCE #{source}" | acc]
+
+        not File.regular?(source) ->
+          ["NOT_FILE_COPY_SOURCE #{source}" | acc]
+
+        not File.exists?(target) ->
+          acc
+
+        File.read(source) != File.read(target) ->
+          ["MISMATCH #{target} does not match #{source}" | acc]
+
+        true ->
+          acc
       end
     end)
   end
@@ -502,12 +516,18 @@ defmodule WgKeyRotator.Secrets do
 
   defp check_hash(issues, path, %{kind: :sha256}) do
     if File.exists?(path) and File.regular?(path) do
-      value = path |> File.read!() |> String.trim()
+      case File.read(path) do
+        {:ok, contents} ->
+          value = String.trim(contents)
 
-      if value =~ ~r/\A[0-9a-f]{64}\z/ do
-        issues
-      else
-        ["INVALID_HASH #{path}" | issues]
+          if value =~ ~r/\A[0-9a-f]{64}\z/ do
+            issues
+          else
+            ["INVALID_HASH #{path}" | issues]
+          end
+
+        {:error, _reason} ->
+          ["UNREADABLE #{path}" | issues]
       end
     else
       issues
@@ -518,18 +538,23 @@ defmodule WgKeyRotator.Secrets do
 
   defp check_secret_value(issues, path, %{kind: :secret}) do
     if File.exists?(path) and File.regular?(path) do
-      value = File.read!(path)
-      trimmed = String.trim(value)
+      case File.read(path) do
+        {:ok, value} ->
+          trimmed = String.trim(value)
 
-      cond do
-        trimmed == "" ->
-          ["EMPTY_SECRET #{path}" | issues]
+          cond do
+            trimmed == "" ->
+              ["EMPTY_SECRET #{path}" | issues]
 
-        multiline?(trimmed) ->
-          ["MULTILINE_SECRET #{path}" | issues]
+            multiline?(trimmed) ->
+              ["MULTILINE_SECRET #{path}" | issues]
 
-        true ->
-          issues
+            true ->
+              issues
+          end
+
+        {:error, _reason} ->
+          ["UNREADABLE #{path}" | issues]
       end
     else
       issues
