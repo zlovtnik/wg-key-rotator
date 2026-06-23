@@ -1,4 +1,8 @@
 defmodule WgKeyRotator.Message do
+  @moduledoc """
+  Renders a human-readable rotation notification message for WhatsApp.
+  """
+
   def render(config, public_key, now) do
     [
       "WireGuard server key rotation complete",

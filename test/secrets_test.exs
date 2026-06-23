@@ -123,6 +123,37 @@ defmodule WgKeyRotator.SecretsTest do
     assert mode(Path.join(root, ".env")) == 0o600
   end
 
+  test "env honors compose image overrides" do
+    root = tmp_repo()
+    on_exit(fn -> File.rm_rf(root) end)
+
+    assert {:ok, _output} = Secrets.generate(root)
+
+    assert {:ok, output} =
+             Secrets.env(root, %{"REGISTRY" => "192.168.1.221:5000", "IMAGE_TAG" => "dev"})
+
+    assert output =~ ".env"
+
+    env = File.read!(Path.join(root, ".env"))
+    assert env =~ "REGISTRY=192.168.1.221:5000"
+    assert env =~ "IMAGE_TAG=dev"
+    refute env =~ "<server-local-ip>"
+  end
+
+  test "env derives registry from server ip" do
+    root = tmp_repo()
+    on_exit(fn -> File.rm_rf(root) end)
+
+    assert {:ok, _output} = Secrets.generate(root)
+    assert {:ok, output} = Secrets.env(root, %{"SERVER_IP" => "192.168.1.221"})
+    assert output =~ ".env"
+
+    env = File.read!(Path.join(root, ".env"))
+    assert env =~ "REGISTRY=192.168.1.221:5000"
+    assert env =~ "IMAGE_TAG=latest"
+    refute env =~ "<server-local-ip>"
+  end
+
   defp token_value(contents, key) do
     contents
     |> String.split("\n")

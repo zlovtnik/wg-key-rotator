@@ -1,4 +1,12 @@
 defmodule WgKeyRotator.Rotation do
+  @moduledoc """
+  Orchestrates WireGuard key rotation: staging a new generation,
+  starting the next runtime, checking migration status, promoting or
+  rolling back, and sending WhatsApp notifications via WAHA.
+  """
+
+  import Bitwise
+
   alias WgKeyRotator.{AtomicFile, Command, Config, Deploy, Error, Keygen, PeerConfig, WahaClient}
 
   @pending_marker "state/pending_generation"
@@ -139,27 +147,35 @@ defmodule WgKeyRotator.Rotation do
       {:ok, generation_id} ->
         with :ok <- ensure_not_expired(config, generation_id, opts),
              :ok <- ensure_active_runtime_secrets(config) do
-          case migration_status(config, generation_id, opts) do
-            {:ok, migration} ->
-              if Enum.all?(migration.peers, & &1.migrated?) do
-                promote(config, opts)
-              else
-                {:ok, %{generation_id: generation_id, status: :pending, migration: migration}}
-              end
-
-            {:error, error} ->
-              if candidate_unavailable?(error) do
-                start_next(config, opts)
-              else
-                {:error, error}
-              end
-          end
+          handle_existing_generation(config, generation_id, opts)
         end
 
       {:error, _error} ->
-        with {:ok, _stage_result} <- stage(config, opts) do
-          start_next(config, opts)
+        stage_and_start_next(config, opts)
+    end
+  end
+
+  defp handle_existing_generation(config, generation_id, opts) do
+    case migration_status(config, generation_id, opts) do
+      {:ok, migration} ->
+        if Enum.all?(migration.peers, & &1.migrated?) do
+          promote(config, opts)
+        else
+          {:ok, %{generation_id: generation_id, status: :pending, migration: migration}}
         end
+
+      {:error, error} ->
+        if candidate_unavailable?(error) do
+          start_next(config, opts)
+        else
+          {:error, error}
+        end
+    end
+  end
+
+  defp stage_and_start_next(config, opts) do
+    with {:ok, _stage_result} <- stage(config, opts) do
+      start_next(config, opts)
     end
   end
 
@@ -337,9 +353,8 @@ defmodule WgKeyRotator.Rotation do
          :ok <- write_peer_artifacts(dir, peers),
          :ok <- write_rotation_secrets(dir),
          :ok <-
-           write_frontdoor_config(Path.join(dir, "frontdoor/wg-udp-frontdoor.toml"), :candidate) do
-      :ok
-    end
+           write_frontdoor_config(Path.join(dir, "frontdoor/wg-udp-frontdoor.toml"), :candidate),
+         do: :ok
   end
 
   defp write_peer_artifacts(dir, peers) do
@@ -370,37 +385,37 @@ defmodule WgKeyRotator.Rotation do
           peer.preshared_key
         )
 
-      result =
-        with :ok <- write_text(Path.join(peer_dir, "#{peer.name}.conf"), direct, 0o600),
-             :ok <-
-               write_text(Path.join(peer_dir, "#{peer.name}-obfuscated.conf"), obfuscated, 0o600),
-             :ok <-
-               write_text(
-                 Path.join(peer_dir, "publickey-#{peer.name}"),
-                 peer.public_key <> "\n",
-                 0o644
-               ),
-             :ok <-
-               write_text(
-                 Path.join(peer_dir, "presharedkey-#{peer.name}"),
-                 peer.preshared_key <> "\n",
-                 0o600
-               ),
-             :ok <- write_text(Path.join(bundle_dir, "#{peer.name}.conf"), direct, 0o600),
-             :ok <-
-               write_text(
-                 Path.join(bundle_dir, "#{peer.name}-obfuscated.conf"),
-                 obfuscated,
-                 0o600
-               ) do
-          :ok
-        end
-
-      case result do
+      case write_peer_files(peer, peer_dir, bundle_dir, direct, obfuscated) do
         :ok -> {:cont, :ok}
         {:error, error} -> {:halt, {:error, error}}
       end
     end)
+  end
+
+  defp write_peer_files(peer, peer_dir, bundle_dir, direct, obfuscated) do
+    with :ok <- write_text(Path.join(peer_dir, "#{peer.name}.conf"), direct, 0o600),
+         :ok <-
+           write_text(Path.join(peer_dir, "#{peer.name}-obfuscated.conf"), obfuscated, 0o600),
+         :ok <-
+           write_text(
+             Path.join(peer_dir, "publickey-#{peer.name}"),
+             peer.public_key <> "\n",
+             0o644
+           ),
+         :ok <-
+           write_text(
+             Path.join(peer_dir, "presharedkey-#{peer.name}"),
+             peer.preshared_key <> "\n",
+             0o600
+           ),
+         :ok <- write_text(Path.join(bundle_dir, "#{peer.name}.conf"), direct, 0o600),
+         :ok <-
+           write_text(
+             Path.join(bundle_dir, "#{peer.name}-obfuscated.conf"),
+             obfuscated,
+             0o600
+           ),
+         do: :ok
   end
 
   defp render_peer_config(contents, private_key, server_public_key, preshared_key) do
@@ -425,9 +440,8 @@ defmodule WgKeyRotator.Rotation do
              Path.join(dir, "secrets/wg_obfuscation_key"),
              Keygen.random_secret(32, :base64) <> "\n",
              0o400
-           ) do
-      :ok
-    end
+           ),
+         do: :ok
   end
 
   defp ensure_active_runtime_secrets(config) do
@@ -442,16 +456,20 @@ defmodule WgKeyRotator.Rotation do
              Path.join(config.repo_root, "secrets/wg_obfuscation_key"),
              fn -> Keygen.random_secret(32, :base64) <> "\n" end,
              0o400
-           ) do
-      :ok
-    end
+           ),
+         do: :ok
   end
 
   defp ensure_secret_file(path, value_fun, mode) do
-    if File.exists?(path) do
-      :ok
-    else
-      write_text(path, value_fun.(), mode)
+    cond do
+      File.exists?(path) and File.regular?(path) and mode(path) == mode ->
+        :ok
+
+      File.exists?(path) ->
+        write_text(path, value_fun.(), mode)
+
+      true ->
+        write_text(path, value_fun.(), mode)
     end
   end
 
@@ -508,6 +526,13 @@ defmodule WgKeyRotator.Rotation do
     ])
   end
 
+  defp copy_file(source_path, target_path, mode) do
+    case File.read(source_path) do
+      {:ok, contents} -> write_text(target_path, contents, mode)
+      {:error, reason} -> file_error(:copy_file, source_path, reason)
+    end
+  end
+
   defp copy_files(source_root, target_root, files) do
     Enum.reduce_while(files, :ok, fn {source, target, mode}, :ok ->
       source_path = Path.join(source_root, source)
@@ -515,12 +540,7 @@ defmodule WgKeyRotator.Rotation do
 
       result =
         if File.exists?(source_path) do
-          source_path
-          |> File.read()
-          |> case do
-            {:ok, contents} -> write_text(target_path, contents, mode)
-            {:error, reason} -> file_error(:copy_file, source_path, reason)
-          end
+          copy_file(source_path, target_path, mode)
         else
           :ok
         end
@@ -654,11 +674,13 @@ defmodule WgKeyRotator.Rotation do
     if pending == [] do
       :ok
     else
+      names = Enum.map_join(pending, ",", & &1.name)
+
       {:error,
        %Error{
          step: :promotion_gate,
          message: "not all peers have a recent candidate handshake",
-         details: pending |> Enum.map(& &1.name) |> Enum.join(",")
+         details: names
        }}
     end
   end
@@ -706,7 +728,7 @@ defmodule WgKeyRotator.Rotation do
         "# Generated by wg-key-rotator. Safe to replace with a newer generated file.",
         "",
         Enum.map_join(listeners, "\n\n", fn {name, bind_addr, backends} ->
-          backends = backends |> Enum.map(&~s("#{&1}")) |> Enum.join(", ")
+          backends = Enum.map_join(backends, ", ", &~s("#{&1}"))
 
           """
           [[listeners]]
@@ -796,6 +818,13 @@ defmodule WgKeyRotator.Rotation do
 
   defp ensure_trailing_newline(contents) do
     if String.ends_with?(contents, "\n"), do: contents, else: contents <> "\n"
+  end
+
+  defp mode(path) do
+    case File.stat(path) do
+      {:ok, stat} -> stat.mode &&& 0o777
+      {:error, _reason} -> nil
+    end
   end
 
   defp join_output(first, second) do

@@ -1,4 +1,10 @@
 defmodule WgKeyRotator.Deploy do
+  @moduledoc """
+  Deploys the ssl-proxy container by pulling the latest image, starting
+  the service, verifying it with `docker compose ps`, and checking the
+  health endpoint.
+  """
+
   alias WgKeyRotator.{Command, Error, Health}
 
   def run(config, opts \\ []) do

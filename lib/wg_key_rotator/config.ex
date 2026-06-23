@@ -1,4 +1,10 @@
 defmodule WgKeyRotator.Config do
+  @moduledoc """
+  Loads and validates configuration from environment variables and a
+  `.env` file. Builds a `%Config{}` struct with paths, peer list, timeouts,
+  and WAHA integration settings.
+  """
+
   alias WgKeyRotator.Error
 
   @app_root Path.expand("../..", __DIR__)

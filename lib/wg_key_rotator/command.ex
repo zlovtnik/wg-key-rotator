@@ -1,4 +1,10 @@
 defmodule WgKeyRotator.Command do
+  @moduledoc """
+  Runs external commands with optional timeout support using Erlang
+  ports. Provides a `system_runner/3` function suitable as the default
+  runner across the application.
+  """
+
   alias WgKeyRotator.Error
 
   @type runner ::

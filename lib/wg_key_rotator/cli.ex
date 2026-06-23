@@ -1,4 +1,10 @@
 defmodule WgKeyRotator.CLI do
+  @moduledoc """
+  Command-line interface for the wg-key-rotator application. Defines
+  top-level commands (`rotate`, `stage`, `status`, etc.) called from
+  `escript` or Mix run.
+  """
+
   alias WgKeyRotator.{Config, Error, Rotation, Secrets}
 
   def main(argv) do

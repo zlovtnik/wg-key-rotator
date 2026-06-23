@@ -1,4 +1,12 @@
 defmodule WgKeyRotator do
+  @moduledoc """
+  Top-level module for WireGuard key rotation.
+
+  Provides the main `rotate/1` and `rotate/2` entry points that
+  orchestrate key generation, atomic file writes, deployment, and
+  WhatsApp notification.
+  """
+
   alias WgKeyRotator.{AtomicFile, Config, Deploy, Error, Keygen, Message, WahaClient}
 
   def rotate(opts \\ []) when is_list(opts) do

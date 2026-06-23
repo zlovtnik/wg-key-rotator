@@ -1,4 +1,9 @@
 defmodule WgKeyRotator.WahaClient do
+  @moduledoc """
+  HTTP client for sending WhatsApp messages via the WAHA (WhatsApp HTTP API)
+  service.
+  """
+
   alias WgKeyRotator.{Error, Json}
 
   def send_message(config, text, opts \\ []) do
