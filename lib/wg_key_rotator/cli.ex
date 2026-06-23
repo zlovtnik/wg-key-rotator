@@ -43,6 +43,7 @@ defmodule WgKeyRotator.CLI do
   def run(["rollback"]), do: run_rotation_command(:rollback)
   def run(["secrets", "generate" | args]), do: run_secrets_generate(args)
   def run(["secrets", "check"]), do: run_secrets_command(:check)
+  def run(["secrets", "repair"]), do: run_secrets_command(:repair)
   def run(["secrets", "env"]), do: run_secrets_command(:env)
   def run(["secrets" | _argv]), do: {:halt, 64, usage()}
   def run(["--help"]), do: {:halt, 0, usage()}
@@ -90,6 +91,7 @@ defmodule WgKeyRotator.CLI do
     with {:ok, repo_root} <- Secrets.repo_root() do
       case command do
         :check -> Secrets.check(repo_root)
+        :repair -> Secrets.repair(repo_root)
         :env -> Secrets.env(repo_root)
       end
     end
@@ -164,6 +166,7 @@ defmodule WgKeyRotator.CLI do
       wg_key_rotator rollback
       wg_key_rotator secrets generate [--force] [--dry-run]
       wg_key_rotator secrets check
+      wg_key_rotator secrets repair
       wg_key_rotator secrets env
 
     required environment for legacy rotate:

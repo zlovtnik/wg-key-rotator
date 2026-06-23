@@ -62,6 +62,81 @@ defmodule WgKeyRotator.SecretsTest do
     assert {:ok, "OK: secret tree is complete"} = Secrets.check(root)
   end
 
+  test "repair fixes stale bootstrap candidate copies and permissions" do
+    root = tmp_repo()
+    on_exit(fn -> File.rm_rf(root) end)
+
+    assert {:ok, _output} = Secrets.generate(root)
+    File.rm!(Path.join(root, "secrets/ONE_TIME_TOKENS"))
+
+    candidate_dir = Path.join(root, "secrets/wg-rotation/candidate")
+    candidate_secrets_dir = Path.join(candidate_dir, "secrets")
+    candidate_admin = Path.join(candidate_secrets_dir, "admin_api_key")
+    candidate_obfuscation = Path.join(candidate_secrets_dir, "wg_obfuscation_key")
+
+    assert :ok = File.chmod(candidate_admin, 0o600)
+    assert :ok = File.chmod(candidate_obfuscation, 0o600)
+    File.write!(candidate_admin, "stale-admin\n")
+    File.write!(candidate_obfuscation, "stale-obfuscation\n")
+    assert :ok = File.chmod(candidate_dir, 0o775)
+    assert :ok = File.chmod(candidate_secrets_dir, 0o775)
+
+    assert {:error, error} = Secrets.check(root)
+    assert error.details =~ "WRONG_PERMS"
+    assert error.details =~ "MISMATCH"
+
+    assert {:ok, "OK: repaired secret tree"} = Secrets.repair(root)
+    assert {:ok, "OK: secret tree is complete"} = Secrets.check(root)
+
+    assert mode(candidate_dir) == 0o700
+    assert mode(candidate_secrets_dir) == 0o700
+    assert mode(candidate_admin) == 0o400
+    assert mode(candidate_obfuscation) == 0o400
+
+    assert File.read!(candidate_admin) == File.read!(Path.join(root, "secrets/admin_api_key"))
+
+    assert File.read!(candidate_obfuscation) ==
+             File.read!(Path.join(root, "secrets/wg_obfuscation_key"))
+  end
+
+  test "repair preserves pending generation candidate secrets" do
+    root = tmp_repo()
+    on_exit(fn -> File.rm_rf(root) end)
+
+    assert {:ok, _output} = Secrets.generate(root)
+    File.rm!(Path.join(root, "secrets/ONE_TIME_TOKENS"))
+
+    generation_secrets = Path.join(root, "secrets/wg-rotation/generations/gen1/secrets")
+    File.mkdir_p!(generation_secrets)
+    generation_admin = Path.join(generation_secrets, "admin_api_key")
+    generation_obfuscation = Path.join(generation_secrets, "wg_obfuscation_key")
+    File.write!(generation_admin, "pending-admin\n")
+    File.write!(generation_obfuscation, "pending-obfuscation\n")
+    assert :ok = File.chmod(generation_admin, 0o400)
+    assert :ok = File.chmod(generation_obfuscation, 0o400)
+
+    state_dir = Path.join(root, "secrets/wg-rotation/state")
+    File.mkdir_p!(state_dir)
+    File.write!(Path.join(state_dir, "pending_generation"), "gen1\n")
+
+    candidate_secrets_dir = Path.join(root, "secrets/wg-rotation/candidate/secrets")
+    candidate_admin = Path.join(candidate_secrets_dir, "admin_api_key")
+    candidate_obfuscation = Path.join(candidate_secrets_dir, "wg_obfuscation_key")
+
+    assert :ok = File.chmod(candidate_admin, 0o600)
+    assert :ok = File.chmod(candidate_obfuscation, 0o600)
+    File.write!(candidate_admin, "stale-admin\n")
+    File.write!(candidate_obfuscation, "stale-obfuscation\n")
+
+    assert {:error, error} = Secrets.check(root)
+    assert error.details =~ "MISMATCH"
+
+    assert {:ok, "OK: repaired secret tree"} = Secrets.repair(root)
+    assert {:ok, "OK: secret tree is complete"} = Secrets.check(root)
+    assert File.read!(candidate_admin) == "pending-admin\n"
+    assert File.read!(candidate_obfuscation) == "pending-obfuscation\n"
+  end
+
   test "generation refuses to overwrite unless forced" do
     root = tmp_repo()
     on_exit(fn -> File.rm_rf(root) end)

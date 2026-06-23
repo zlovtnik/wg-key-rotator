@@ -41,9 +41,11 @@ The rotator owns root stack secret bootstrap:
 scripts/gen-secrets generate
 scripts/gen-secrets env
 scripts/gen-secrets check
+scripts/gen-secrets repair
 ```
 
 `generate` refuses to overwrite existing managed secret files unless `--force` is passed. A dry run is available with `scripts/gen-secrets --dry-run`.
+`repair` fixes managed permissions and candidate secret copies without replacing root secrets.
 
 The raw Atheros API token is written once to `secrets/ONE_TIME_TOKENS`. Save it outside the repository and delete that file; `scripts/gen-secrets check` fails while it exists.
 

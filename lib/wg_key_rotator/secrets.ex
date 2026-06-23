@@ -8,6 +8,8 @@ defmodule WgKeyRotator.Secrets do
   @secret_dir "secrets"
   @env_file ".env"
   @one_time_tokens "ONE_TIME_TOKENS"
+  @pending_generation_marker "wg-rotation/state/pending_generation"
+  @candidate_prefix "wg-rotation/candidate/"
   @default_image_tag "latest"
 
   @secret_specs [
@@ -154,6 +156,17 @@ defmodule WgKeyRotator.Secrets do
            message: "secret check failed",
            details: Enum.reverse(issues) |> Enum.join("\n")
          }}
+    end
+  end
+
+  def repair(repo_root) do
+    with :ok <- ensure_secret_directories(repo_root),
+         :ok <- repair_secret_file_modes(repo_root),
+         :ok <- repair_copy_files(repo_root) do
+      case check(repo_root) do
+        {:ok, _output} -> {:ok, "OK: repaired secret tree"}
+        {:error, error} -> {:error, error}
+      end
     end
   end
 
@@ -355,7 +368,7 @@ defmodule WgKeyRotator.Secrets do
 
   defp check_copy_files(issues, repo_root) do
     Enum.reduce(@copies, issues, fn copy, acc ->
-      source = secret_path(repo_root, copy.source)
+      source = expected_copy_source(repo_root, copy)
       target = secret_path(repo_root, copy.target)
 
       acc =
@@ -369,6 +382,54 @@ defmodule WgKeyRotator.Secrets do
         acc
       end
     end)
+  end
+
+  defp repair_secret_file_modes(repo_root) do
+    Enum.reduce_while(@secret_specs, :ok, fn spec, :ok ->
+      path = secret_path(repo_root, spec.path)
+
+      result =
+        cond do
+          File.exists?(path) and File.regular?(path) ->
+            File.chmod(path, spec.mode)
+
+          true ->
+            :ok
+        end
+
+      case result do
+        :ok -> {:cont, :ok}
+        {:error, reason} -> {:halt, secret_repair_error(path, reason)}
+      end
+    end)
+  end
+
+  defp repair_copy_files(repo_root) do
+    Enum.reduce_while(@copies, :ok, fn copy, :ok ->
+      source = expected_copy_source(repo_root, copy)
+      target = secret_path(repo_root, copy.target)
+
+      result =
+        case File.read(source) do
+          {:ok, contents} -> write_managed_file(target, contents, copy.mode, true)
+          {:error, :enoent} -> :ok
+          {:error, reason} -> secret_repair_error(source, reason)
+        end
+
+      case result do
+        :ok -> {:cont, :ok}
+        {:error, error} -> {:halt, {:error, error}}
+      end
+    end)
+  end
+
+  defp secret_repair_error(path, reason) do
+    {:error,
+     %Error{
+       step: :secret_repair,
+       message: "failed to repair #{path}",
+       details: inspect(reason)
+     }}
   end
 
   defp check_one_time_tokens(issues, repo_root) do
@@ -672,6 +733,51 @@ defmodule WgKeyRotator.Secrets do
     bytes
     |> :crypto.strong_rand_bytes()
     |> Base.url_encode64(padding: false)
+  end
+
+  defp expected_copy_source(repo_root, copy) do
+    case pending_generation(repo_root) do
+      {:ok, generation_id} ->
+        generation_source = generation_copy_source(repo_root, generation_id, copy)
+
+        if File.exists?(generation_source) do
+          generation_source
+        else
+          secret_path(repo_root, copy.source)
+        end
+
+      :none ->
+        secret_path(repo_root, copy.source)
+    end
+  end
+
+  defp generation_copy_source(repo_root, generation_id, copy) do
+    source =
+      String.replace_prefix(
+        copy.target,
+        @candidate_prefix,
+        "wg-rotation/generations/#{generation_id}/"
+      )
+
+    secret_path(repo_root, source)
+  end
+
+  defp pending_generation(repo_root) do
+    path = secret_path(repo_root, @pending_generation_marker)
+
+    case File.read(path) do
+      {:ok, contents} ->
+        case String.trim(contents) do
+          "" -> :none
+          generation_id -> {:ok, generation_id}
+        end
+
+      {:error, :enoent} ->
+        :none
+
+      {:error, _reason} ->
+        :none
+    end
   end
 
   defp secret_path(repo_root, path), do: Path.join([repo_root, @secret_dir, path])

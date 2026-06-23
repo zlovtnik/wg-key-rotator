@@ -28,6 +28,13 @@ defmodule WgKeyRotator.CLITest do
     assert {:ok, "OK: secret tree is complete"} = CLI.run(["secrets", "check"])
   end
 
+  test "routes secrets repair", %{root: root} do
+    assert {:ok, _output} = CLI.run(["secrets", "generate"])
+    File.rm!(Path.join(root, "secrets/ONE_TIME_TOKENS"))
+
+    assert {:ok, "OK: repaired secret tree"} = CLI.run(["secrets", "repair"])
+  end
+
   test "rejects invalid secrets subcommands" do
     assert {:halt, 64, usage} = CLI.run(["secrets", "bogus"])
     assert usage =~ "wg_key_rotator secrets generate"
