@@ -466,7 +466,10 @@ defmodule WgKeyRotator.Rotation do
         :ok
 
       File.exists?(path) ->
-        write_text(path, value_fun.(), mode)
+        case File.read(path) do
+          {:ok, contents} -> write_text(path, contents, mode)
+          {:error, reason} -> file_error(:ensure_secret, path, reason)
+        end
 
       true ->
         write_text(path, value_fun.(), mode)
@@ -542,7 +545,7 @@ defmodule WgKeyRotator.Rotation do
         if File.exists?(source_path) do
           copy_file(source_path, target_path, mode)
         else
-          :ok
+          file_error(:copy_file, source_path, :enoent)
         end
 
       case result do

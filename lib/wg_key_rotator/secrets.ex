@@ -417,12 +417,18 @@ defmodule WgKeyRotator.Secrets do
 
   defp check_secret_value(issues, path, %{kind: :secret}) do
     if File.exists?(path) and File.regular?(path) do
-      value = path |> File.read!() |> String.trim()
+      value = File.read!(path)
+      trimmed = String.trim(value)
 
-      if value == "" do
-        ["EMPTY_SECRET #{path}" | issues]
-      else
-        issues
+      cond do
+        trimmed == "" ->
+          ["EMPTY_SECRET #{path}" | issues]
+
+        multiline?(trimmed) ->
+          ["MULTILINE_SECRET #{path}" | issues]
+
+        true ->
+          issues
       end
     else
       issues
@@ -475,11 +481,16 @@ defmodule WgKeyRotator.Secrets do
     end
   end
 
-  defp validate_env_secret(_path, value, _spec) do
-    if value == "" do
-      {:error, %Error{step: :secret_env, message: "secret value is empty"}}
-    else
-      :ok
+  defp validate_env_secret(path, value, _spec) do
+    cond do
+      value == "" ->
+        {:error, %Error{step: :secret_env, message: "secret value is empty", details: path}}
+
+      multiline?(value) ->
+        {:error, %Error{step: :secret_env, message: "secret value contains newlines", details: path}}
+
+      true ->
+        :ok
     end
   end
 
@@ -626,6 +637,10 @@ defmodule WgKeyRotator.Secrets do
 
   defp prepend_present(nil, list), do: list
   defp prepend_present(value, list), do: [value | list]
+
+  defp multiline?(value) do
+    String.contains?(value, "\r") or String.contains?(value, "\n")
+  end
 
   defp random_secret(bytes) do
     bytes
