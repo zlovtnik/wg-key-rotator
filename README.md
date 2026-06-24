@@ -64,7 +64,8 @@ The raw Atheros API token is written once to `secrets/ONE_TIME_TOKENS`. Save it 
 
 ### Peers and migration
 
-- `ROTATOR_PEERS` — Comma-separated peer names. Defaults to `peer1,peer2`.
+- `WG_PEERS` — Stack-wide comma-separated peer names used by the active proxy, candidate proxy, `up-ready`, and the rotator. Defaults to `peer1,peer2`.
+- `ROTATOR_PEERS` — Optional rotator-only peer list override. When blank or unset, the rotator uses `WG_PEERS`.
 - `ROTATOR_MIGRATION_TIMEOUT_SECS` — Max age of a pending generation before it is considered expired. Defaults to `86400` (24 hours).
 - `ROTATOR_HANDSHAKE_GRACE_SECS` — Max age of a peer handshake to count as migrated. Defaults to `600` (10 minutes).
 - `ROTATOR_NEXT_ADMIN_PORT` — Admin port for the `ssl-proxy-next` candidate container. Defaults to `3012`.
