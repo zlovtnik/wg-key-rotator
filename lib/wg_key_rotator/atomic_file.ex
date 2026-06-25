@@ -1,4 +1,9 @@
 defmodule WgKeyRotator.AtomicFile do
+  @moduledoc """
+  Writes files atomically by writing to a temporary file in the same
+  directory and then renaming.
+  """
+
   alias WgKeyRotator.Error
 
   def write(path, contents, mode)
@@ -13,26 +18,27 @@ defmodule WgKeyRotator.AtomicFile do
         :ok
       end
 
-    case result do
-      :ok ->
-        :ok
+    handle_write_result(result, tmp_path, path)
+  end
 
-      {:error, reason} ->
-        File.rm(tmp_path)
+  defp handle_write_result(:ok, _tmp_path, _path), do: :ok
 
-        {:error,
-         %Error{
-           step: :write_key_file,
-           message: "failed to write #{path}",
-           details: inspect(reason)
-         }}
-    end
+  defp handle_write_result({:error, reason}, tmp_path, path) do
+    File.rm(tmp_path)
+
+    {:error,
+     %Error{
+       step: :write_key_file,
+       message: "failed to write #{path}",
+       details: inspect(reason)
+     }}
   end
 
   defp write_temp(path, contents, mode) do
     case File.open(path, [:write, :exclusive, :binary], fn io ->
-           with :ok <- File.chmod(path, mode) do
-             IO.binwrite(io, contents)
+           case File.chmod(path, mode) do
+             :ok -> IO.binwrite(io, contents)
+             error -> error
            end
          end) do
       {:ok, :ok} -> :ok

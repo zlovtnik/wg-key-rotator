@@ -1,4 +1,12 @@
 defmodule WgKeyRotator.Rotation do
+  @moduledoc """
+  Orchestrates WireGuard key rotation: staging a new generation,
+  starting the next runtime, checking migration status, promoting or
+  rolling back, and sending WhatsApp notifications via WAHA.
+  """
+
+  import Bitwise
+
   alias WgKeyRotator.{AtomicFile, Command, Config, Deploy, Error, Keygen, PeerConfig, WahaClient}
 
   @pending_marker "state/pending_generation"
@@ -34,32 +42,157 @@ defmodule WgKeyRotator.Rotation do
     runner = Keyword.get(opts, :runner, &Command.system_runner/3)
 
     with {:ok, generation_id} <- pending_generation(config),
+         :ok <- ensure_active_runtime_secrets(config),
          :ok <- install_frontdoor_config(config, generation_id, :candidate),
-         {:ok, output} <-
-           Command.run(
-             runner,
-             "docker",
-             [
-               "compose",
-               "--profile",
-               "rotation",
-               "up",
-               "-d",
-               "--build",
-               "ssl-proxy-next",
-               "wg-udp-frontdoor"
-             ],
-             [
-               cd: config.repo_root,
-               stderr_to_stdout: true,
-               timeout_ms: config.command_timeout_ms
-             ],
-             :start_next
-           ) do
-      result = %{generation_id: generation_id, status: :candidate_started, output: output}
+         {:ok, pull_output} <- pull_next_runtime(config, runner, opts),
+         {:ok, start_output} <- start_next_runtime(config, runner) do
+      result = %{
+        generation_id: generation_id,
+        status: :candidate_started,
+        output: join_output(pull_output, start_output)
+      }
+
       notify_event(config, result, opts)
       {:ok, result}
     end
+  end
+
+  defp pull_next_runtime(config, runner, opts) do
+    compose_env = Keyword.get(opts, :compose_env, System.get_env())
+
+    with :ok <- require_concrete_compose_image_env(config.repo_root, compose_env) do
+      Command.run(
+        runner,
+        "docker",
+        ["compose", "--profile", "rotation", "pull", "ssl-proxy-next", "wg-udp-frontdoor"],
+        [cd: config.repo_root, stderr_to_stdout: true, timeout_ms: config.command_timeout_ms],
+        :pull_next
+      )
+    end
+  end
+
+  defp start_next_runtime(config, runner) do
+    Command.run(
+      runner,
+      "docker",
+      ["compose", "--profile", "rotation", "up", "-d", "ssl-proxy-next", "wg-udp-frontdoor"],
+      [cd: config.repo_root, stderr_to_stdout: true, timeout_ms: config.command_timeout_ms],
+      :start_next
+    )
+  end
+
+  defp require_concrete_compose_image_env(repo_root, env) do
+    with {:ok, registry} <- compose_image_env_value(repo_root, env, "REGISTRY", nil),
+         {:ok, _image_tag} <- compose_image_env_value(repo_root, env, "IMAGE_TAG", "latest") do
+      if registry in [nil, ""] do
+        {:error,
+         %Error{
+           step: :compose_env,
+           message: "REGISTRY is required before starting rotation runtime",
+           details:
+             "set REGISTRY=<server-local-ip>:5000 or run SERVER_IP=<server-local-ip> scripts/gen-secrets env from the repo root"
+         }}
+      else
+        :ok
+      end
+    end
+  end
+
+  defp compose_image_env_value(repo_root, env, key, default) do
+    value =
+      Map.get(env, key)
+      |> blank_to_nil()
+      |> case do
+        nil -> dotenv_value(repo_root, key) || default
+        value -> value
+      end
+
+    cond do
+      is_nil(value) ->
+        {:ok, nil}
+
+      unresolved_placeholder?(value) ->
+        {:error,
+         %Error{
+           step: :compose_env,
+           message: "#{key} contains an unresolved placeholder",
+           details:
+             "set REGISTRY=<server-local-ip>:5000 or run SERVER_IP=<server-local-ip> scripts/gen-secrets env from the repo root"
+         }}
+
+      true ->
+        {:ok, value}
+    end
+  end
+
+  defp dotenv_value(repo_root, key) do
+    path = Path.join(repo_root, ".env")
+
+    with {:ok, contents} <- File.read(path) do
+      contents
+      |> String.split("\n")
+      |> Enum.find_value(fn line ->
+        case dotenv_pair(line) do
+          {:ok, ^key, value} -> value
+          _ -> nil
+        end
+      end)
+      |> blank_to_nil()
+    else
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp dotenv_pair(line) do
+    line = String.trim(line)
+
+    cond do
+      line == "" ->
+        :skip
+
+      String.starts_with?(line, "#") ->
+        :skip
+
+      true ->
+        parts =
+          line
+          |> String.replace_prefix("export ", "")
+          |> String.split("=", parts: 2)
+
+        case parts do
+          [key, value] -> {:ok, String.trim(key), strip_quotes(value)}
+          _ -> :skip
+        end
+    end
+  end
+
+  defp strip_quotes(value) do
+    value = String.trim(value)
+
+    cond do
+      String.starts_with?(value, "\"") and String.ends_with?(value, "\"") ->
+        value |> String.trim_leading("\"") |> String.trim_trailing("\"")
+
+      String.starts_with?(value, "'") and String.ends_with?(value, "'") ->
+        value |> String.trim_leading("'") |> String.trim_trailing("'")
+
+      true ->
+        value
+    end
+  end
+
+  defp blank_to_nil(nil), do: nil
+
+  defp blank_to_nil(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp unresolved_placeholder?(value) do
+    String.contains?(value, "<") or String.contains?(value, ">") or
+      String.contains?(value, "generated by scripts/gen-secrets env")
   end
 
   def status(%Config{} = config, opts \\ []) do
@@ -131,18 +264,36 @@ defmodule WgKeyRotator.Rotation do
     case pending_generation(config) do
       {:ok, generation_id} ->
         with :ok <- ensure_not_expired(config, generation_id, opts),
-             {:ok, migration} <- migration_status(config, generation_id, opts) do
-          if Enum.all?(migration.peers, & &1.migrated?) do
-            promote(config, opts)
-          else
-            {:ok, %{generation_id: generation_id, status: :pending, migration: migration}}
-          end
+             :ok <- ensure_active_runtime_secrets(config) do
+          handle_existing_generation(config, generation_id, opts)
         end
 
       {:error, _error} ->
-        with {:ok, _stage_result} <- stage(config, opts) do
-          start_next(config, opts)
+        stage_and_start_next(config, opts)
+    end
+  end
+
+  defp handle_existing_generation(config, generation_id, opts) do
+    case migration_status(config, generation_id, opts) do
+      {:ok, migration} ->
+        if Enum.all?(migration.peers, & &1.migrated?) do
+          promote(config, opts)
+        else
+          {:ok, %{generation_id: generation_id, status: :pending, migration: migration}}
         end
+
+      {:error, error} ->
+        if candidate_unavailable?(error) do
+          start_next(config, opts)
+        else
+          {:error, error}
+        end
+    end
+  end
+
+  defp stage_and_start_next(config, opts) do
+    with {:ok, _stage_result} <- stage(config, opts) do
+      start_next(config, opts)
     end
   end
 
@@ -320,9 +471,8 @@ defmodule WgKeyRotator.Rotation do
          :ok <- write_peer_artifacts(dir, peers),
          :ok <- write_rotation_secrets(dir),
          :ok <-
-           write_frontdoor_config(Path.join(dir, "frontdoor/wg-udp-frontdoor.toml"), :candidate) do
-      :ok
-    end
+           write_frontdoor_config(Path.join(dir, "frontdoor/wg-udp-frontdoor.toml"), :candidate),
+         do: :ok
   end
 
   defp write_peer_artifacts(dir, peers) do
@@ -353,37 +503,37 @@ defmodule WgKeyRotator.Rotation do
           peer.preshared_key
         )
 
-      result =
-        with :ok <- write_text(Path.join(peer_dir, "#{peer.name}.conf"), direct, 0o600),
-             :ok <-
-               write_text(Path.join(peer_dir, "#{peer.name}-obfuscated.conf"), obfuscated, 0o600),
-             :ok <-
-               write_text(
-                 Path.join(peer_dir, "publickey-#{peer.name}"),
-                 peer.public_key <> "\n",
-                 0o644
-               ),
-             :ok <-
-               write_text(
-                 Path.join(peer_dir, "presharedkey-#{peer.name}"),
-                 peer.preshared_key <> "\n",
-                 0o600
-               ),
-             :ok <- write_text(Path.join(bundle_dir, "#{peer.name}.conf"), direct, 0o600),
-             :ok <-
-               write_text(
-                 Path.join(bundle_dir, "#{peer.name}-obfuscated.conf"),
-                 obfuscated,
-                 0o600
-               ) do
-          :ok
-        end
-
-      case result do
+      case write_peer_files(peer, peer_dir, bundle_dir, direct, obfuscated) do
         :ok -> {:cont, :ok}
         {:error, error} -> {:halt, {:error, error}}
       end
     end)
+  end
+
+  defp write_peer_files(peer, peer_dir, bundle_dir, direct, obfuscated) do
+    with :ok <- write_text(Path.join(peer_dir, "#{peer.name}.conf"), direct, 0o600),
+         :ok <-
+           write_text(Path.join(peer_dir, "#{peer.name}-obfuscated.conf"), obfuscated, 0o600),
+         :ok <-
+           write_text(
+             Path.join(peer_dir, "publickey-#{peer.name}"),
+             peer.public_key <> "\n",
+             0o644
+           ),
+         :ok <-
+           write_text(
+             Path.join(peer_dir, "presharedkey-#{peer.name}"),
+             peer.preshared_key <> "\n",
+             0o600
+           ),
+         :ok <- write_text(Path.join(bundle_dir, "#{peer.name}.conf"), direct, 0o600),
+         :ok <-
+           write_text(
+             Path.join(bundle_dir, "#{peer.name}-obfuscated.conf"),
+             obfuscated,
+             0o600
+           ),
+         do: :ok
   end
 
   defp render_peer_config(contents, private_key, server_public_key, preshared_key) do
@@ -408,8 +558,39 @@ defmodule WgKeyRotator.Rotation do
              Path.join(dir, "secrets/wg_obfuscation_key"),
              Keygen.random_secret(32, :base64) <> "\n",
              0o400
-           ) do
-      :ok
+           ),
+         do: :ok
+  end
+
+  defp ensure_active_runtime_secrets(config) do
+    with :ok <-
+           ensure_secret_file(
+             Path.join(config.repo_root, "secrets/admin_api_key"),
+             fn -> Keygen.random_secret(32, :url_base64) <> "\n" end,
+             0o400
+           ),
+         :ok <-
+           ensure_secret_file(
+             Path.join(config.repo_root, "secrets/wg_obfuscation_key"),
+             fn -> Keygen.random_secret(32, :base64) <> "\n" end,
+             0o400
+           ),
+         do: :ok
+  end
+
+  defp ensure_secret_file(path, value_fun, mode) do
+    cond do
+      File.exists?(path) and File.regular?(path) and mode(path) == mode ->
+        :ok
+
+      File.exists?(path) ->
+        case File.read(path) do
+          {:ok, contents} -> write_text(path, contents, mode)
+          {:error, reason} -> file_error(:ensure_secret, path, reason)
+        end
+
+      true ->
+        write_text(path, value_fun.(), mode)
     end
   end
 
@@ -466,6 +647,13 @@ defmodule WgKeyRotator.Rotation do
     ])
   end
 
+  defp copy_file(source_path, target_path, mode) do
+    case File.read(source_path) do
+      {:ok, contents} -> write_text(target_path, contents, mode)
+      {:error, reason} -> file_error(:copy_file, source_path, reason)
+    end
+  end
+
   defp copy_files(source_root, target_root, files) do
     Enum.reduce_while(files, :ok, fn {source, target, mode}, :ok ->
       source_path = Path.join(source_root, source)
@@ -473,14 +661,9 @@ defmodule WgKeyRotator.Rotation do
 
       result =
         if File.exists?(source_path) do
-          source_path
-          |> File.read()
-          |> case do
-            {:ok, contents} -> write_text(target_path, contents, mode)
-            {:error, reason} -> file_error(:copy_file, source_path, reason)
-          end
+          copy_file(source_path, target_path, mode)
         else
-          :ok
+          file_error(:copy_file, source_path, :enoent)
         end
 
       case result do
@@ -547,6 +730,16 @@ defmodule WgKeyRotator.Rotation do
     )
   end
 
+  defp candidate_unavailable?(%Error{step: :candidate_dump, details: details}) do
+    details = to_string(details || "")
+
+    String.contains?(details, "service \"ssl-proxy-next\" is not running") or
+      String.contains?(details, "is restarting") or
+      String.contains?(details, "No such container")
+  end
+
+  defp candidate_unavailable?(_error), do: false
+
   defp candidate_public_keys(config, generation_id) do
     peers =
       config.peers
@@ -602,11 +795,13 @@ defmodule WgKeyRotator.Rotation do
     if pending == [] do
       :ok
     else
+      names = Enum.map_join(pending, ",", & &1.name)
+
       {:error,
        %Error{
          step: :promotion_gate,
          message: "not all peers have a recent candidate handshake",
-         details: pending |> Enum.map(& &1.name) |> Enum.join(",")
+         details: names
        }}
     end
   end
@@ -654,7 +849,7 @@ defmodule WgKeyRotator.Rotation do
         "# Generated by wg-key-rotator. Safe to replace with a newer generated file.",
         "",
         Enum.map_join(listeners, "\n\n", fn {name, bind_addr, backends} ->
-          backends = backends |> Enum.map(&~s("#{&1}")) |> Enum.join(", ")
+          backends = Enum.map_join(backends, ", ", &~s("#{&1}"))
 
           """
           [[listeners]]
@@ -744,6 +939,19 @@ defmodule WgKeyRotator.Rotation do
 
   defp ensure_trailing_newline(contents) do
     if String.ends_with?(contents, "\n"), do: contents, else: contents <> "\n"
+  end
+
+  defp mode(path) do
+    case File.stat(path) do
+      {:ok, stat} -> stat.mode &&& 0o777
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp join_output(first, second) do
+    [first, second]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("\n")
   end
 
   defp notify_event(config, result, opts) do

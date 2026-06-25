@@ -1,4 +1,10 @@
 defmodule WgKeyRotator.Config do
+  @moduledoc """
+  Loads and validates configuration from environment variables and a
+  `.env` file. Builds a `%Config{}` struct with paths, peer list, timeouts,
+  and WAHA integration settings.
+  """
+
   alias WgKeyRotator.Error
 
   @app_root Path.expand("../..", __DIR__)
@@ -76,7 +82,7 @@ defmodule WgKeyRotator.Config do
               repo_root,
               "secrets/wg-rotation"
             ),
-          peers: peers(env["ROTATOR_PEERS"]),
+          peers: peers(blank_to_nil(env["ROTATOR_PEERS"]) || env["WG_PEERS"]),
           migration_timeout_secs: positive_integer(env["ROTATOR_MIGRATION_TIMEOUT_SECS"], 86_400),
           handshake_grace_secs: positive_integer(env["ROTATOR_HANDSHAKE_GRACE_SECS"], 600),
           command_timeout_ms: positive_integer(env["ROTATOR_COMMAND_TIMEOUT_MS"], 600_000),
@@ -197,9 +203,28 @@ defmodule WgKeyRotator.Config do
              :repo_root,
              "repo root must contain docker-compose.yaml"
            ),
+         :ok <- require_valid_peers(config.peers),
          :ok <- require_present(config.waha_base_url, :waha_base_url, require_waha),
          :ok <- require_present(config.waha_chat_id, :waha_chat_id, require_waha) do
       {:ok, config}
+    end
+  end
+
+  defp require_valid_peers(peers) do
+    invalid =
+      Enum.find(peers, fn peer ->
+        not Regex.match?(~r/\A[A-Za-z0-9_-]+\z/, peer)
+      end)
+
+    if invalid do
+      {:error,
+       %Error{
+         step: :peers,
+         message: "peer names may contain only letters, numbers, underscore, and dash",
+         details: invalid
+       }}
+    else
+      :ok
     end
   end
 

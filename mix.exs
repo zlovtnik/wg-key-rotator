@@ -8,8 +8,18 @@ defmodule WgKeyRotator.MixProject do
       elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
       escript: [main_module: WgKeyRotator.CLI],
-      deps: []
+      deps: deps()
     ]
+  end
+
+  defp deps do
+    case Mix.env() do
+      env when env in [:dev, :test] ->
+        [{:credo, "~> 1.7", runtime: false}]
+
+      _ ->
+        []
+    end
   end
 
   def application do

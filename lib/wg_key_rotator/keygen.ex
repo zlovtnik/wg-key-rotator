@@ -1,4 +1,9 @@
 defmodule WgKeyRotator.Keygen do
+  @moduledoc """
+  Generates WireGuard keys (private/public pairs, preshared keys) and
+  random secrets using the `wg` command-line tool and Erlang crypto.
+  """
+
   alias WgKeyRotator.{Command, Error}
 
   @key_bytes 32
@@ -81,15 +86,18 @@ defmodule WgKeyRotator.Keygen do
   defp write_temp_private_key(private_key, attempts) do
     tmp_path = temp_path()
 
-    case File.open(tmp_path, [:write, :exclusive, :binary], fn io ->
-           with :ok <- File.chmod(tmp_path, 0o600) do
-             IO.binwrite(io, private_key <> "\n")
-           end
-         end) do
+    case File.open(tmp_path, [:write, :exclusive, :binary], &write_key_file(&1, tmp_path, private_key)) do
       {:ok, :ok} -> {:ok, tmp_path}
       {:ok, {:error, reason}} -> {:error, reason}
       {:error, :eexist} -> write_temp_private_key(private_key, attempts - 1)
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp write_key_file(io, tmp_path, private_key) do
+    case File.chmod(tmp_path, 0o600) do
+      :ok -> IO.binwrite(io, private_key <> "\n")
+      error -> error
     end
   end
 

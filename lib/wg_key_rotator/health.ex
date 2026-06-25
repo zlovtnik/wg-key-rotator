@@ -1,4 +1,9 @@
 defmodule WgKeyRotator.Health do
+  @moduledoc """
+  Performs HTTP health checks against a given URL using Erlang's
+  `:httpc` client.
+  """
+
   alias WgKeyRotator.Error
 
   def get(url, timeout_ms) do

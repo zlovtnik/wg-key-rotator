@@ -1,4 +1,8 @@
 defmodule WgKeyRotator.PeerConfig do
+  @moduledoc """
+  Parses and transforms WireGuard peer configuration files (INI-style).
+  """
+
   def replace_values(contents, replacements) when is_binary(contents) and is_list(replacements) do
     Enum.reduce(replacements, contents, fn {section, key, value}, acc ->
       replace_value(acc, section, key, value)
@@ -14,16 +18,20 @@ defmodule WgKeyRotator.PeerConfig do
           {:cont, {header_name(line), found}}
 
         current == section ->
-          case key_value(line) do
-            {^key, value} -> {:halt, {current, value}}
-            _ -> {:cont, {current, found}}
-          end
+          {:cont, match_key_in_line(line, key, current, found)}
 
         true ->
           {:cont, {current, found}}
       end
     end)
     |> elem(1)
+  end
+
+  defp match_key_in_line(line, key, current, found) do
+    case key_value(line) do
+      {^key, value} -> {current, value}
+      _ -> {current, found}
+    end
   end
 
   defp replace_value(contents, section, key, value) do

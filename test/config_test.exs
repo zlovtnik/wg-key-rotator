@@ -36,6 +36,44 @@ defmodule WgKeyRotator.ConfigTest do
     refute config.include_public_key
   end
 
+  test "falls back to stack peer list when rotator peer list is blank" do
+    root = tmp_repo()
+    on_exit(fn -> File.rm_rf(root) end)
+
+    File.mkdir_p!(Path.join(root, "config/server"))
+    File.touch!(Path.join(root, "docker-compose.yaml"))
+
+    env = %{
+      "ROTATOR_REPO_ROOT" => root,
+      "WAHA_BASE_URL" => "http://waha.local",
+      "WAHA_CHAT_ID" => "12132132130@c.us",
+      "ROTATOR_PEERS" => "",
+      "WG_PEERS" => "peer1,peer2,peer3"
+    }
+
+    assert {:ok, config} = Config.load(env)
+    assert config.peers == ["peer1", "peer2", "peer3"]
+  end
+
+  test "rejects unsafe peer names" do
+    root = tmp_repo()
+    on_exit(fn -> File.rm_rf(root) end)
+
+    File.mkdir_p!(Path.join(root, "config/server"))
+    File.touch!(Path.join(root, "docker-compose.yaml"))
+
+    env = %{
+      "ROTATOR_REPO_ROOT" => root,
+      "WAHA_BASE_URL" => "http://waha.local",
+      "WAHA_CHAT_ID" => "12132132130@c.us",
+      "WG_PEERS" => "peer1,../server"
+    }
+
+    assert {:error, error} = Config.load(env)
+    assert error.step == :peers
+    assert error.details == "../server"
+  end
+
   test "discovers repo root from current working directory" do
     root = tmp_repo()
     on_exit(fn -> File.rm_rf(root) end)

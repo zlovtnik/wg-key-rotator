@@ -1,3 +1,13 @@
+FROM --platform=$BUILDPLATFORM elixir:1.17-slim AS builder
+
+WORKDIR /app
+ENV MIX_ENV=prod
+
+COPY mix.exs ./
+COPY lib ./lib
+
+RUN mix escript.build
+
 FROM elixir:1.17-slim
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -22,11 +32,8 @@ RUN apt-get update \
 WORKDIR /app
 ENV MIX_ENV=prod
 
-COPY mix.exs ./
-COPY lib ./lib
-
-RUN mix escript.build \
-    && install -m 0755 wg_key_rotator /usr/local/bin/wg_key_rotator
+COPY --from=builder /app/wg_key_rotator /usr/local/bin/wg_key_rotator
+RUN chmod 0755 /usr/local/bin/wg_key_rotator
 
 RUN useradd -r -g root -d /app -s /usr/sbin/nologin rotator
 

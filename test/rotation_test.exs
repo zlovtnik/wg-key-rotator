@@ -3,7 +3,7 @@ defmodule WgKeyRotator.RotationTest do
 
   import Bitwise
 
-  alias WgKeyRotator.{Config, Rotation}
+  alias WgKeyRotator.{Config, Error, Rotation}
 
   @now ~U[2026-06-22 10:00:00Z]
   @server_private Base.encode64(:binary.copy(<<10>>, 32))
@@ -14,6 +14,9 @@ defmodule WgKeyRotator.RotationTest do
   @peer2_private Base.encode64(:binary.copy(<<15>>, 32))
   @peer2_public Base.encode64(:binary.copy(<<16>>, 32))
   @peer2_psk Base.encode64(:binary.copy(<<17>>, 32))
+  @peer3_private Base.encode64(:binary.copy(<<18>>, 32))
+  @peer3_public Base.encode64(:binary.copy(<<19>>, 32))
+  @peer3_psk Base.encode64(:binary.copy(<<20>>, 32))
 
   test "stage writes candidate artifacts with strict modes and safe notification" do
     {root, config} = repo_config()
@@ -83,6 +86,22 @@ defmodule WgKeyRotator.RotationTest do
     assert result.status == :candidate_started
     assert File.read!(config.frontdoor_config_path) =~ ~s(candidate-443")
     assert File.read!(config.frontdoor_config_path) =~ "enabled = true"
+    assert File.exists?(Path.join(root, "secrets/admin_api_key"))
+    assert File.exists?(Path.join(root, "secrets/wg_obfuscation_key"))
+    assert mode(Path.join(root, "secrets/admin_api_key")) == 0o400
+    assert mode(Path.join(root, "secrets/wg_obfuscation_key")) == 0o400
+
+    assert_receive {:command, "docker",
+                    [
+                      "compose",
+                      "--profile",
+                      "rotation",
+                      "pull",
+                      "ssl-proxy-next",
+                      "wg-udp-frontdoor"
+                    ], pull_opts}
+
+    assert pull_opts[:cd] == root
 
     assert_receive {:command, "docker",
                     [
@@ -91,12 +110,63 @@ defmodule WgKeyRotator.RotationTest do
                       "rotation",
                       "up",
                       "-d",
-                      "--build",
                       "ssl-proxy-next",
                       "wg-udp-frontdoor"
                     ], opts}
 
     assert opts[:cd] == root
+  end
+
+  test "stage generates artifacts for every configured peer" do
+    {root, config} = repo_config()
+    on_exit(fn -> File.rm_rf(root) end)
+
+    File.mkdir_p!(Path.join(root, "config/peer3"))
+
+    File.write!(
+      Path.join(root, "config/peer3/peer3-obfuscated.conf.example"),
+      peer_conf("10.13.13.4/32")
+    )
+
+    config = %{config | peers: ["peer1", "peer2", "peer3"]}
+
+    assert {:ok, result} =
+             Rotation.stage(config, runner: key_runner(), generation_id: "gen1", now: @now)
+
+    assert result.peer_count == 3
+
+    candidate_peer = Path.join(config.state_dir, "candidate/config/peer3")
+
+    assert File.read!(Path.join(candidate_peer, "publickey-peer3")) == @peer3_public <> "\n"
+    assert File.read!(Path.join(candidate_peer, "presharedkey-peer3")) == @peer3_psk <> "\n"
+    assert File.read!(Path.join(candidate_peer, "peer3.conf")) =~ @peer3_private
+    assert File.read!(Path.join(candidate_peer, "peer3-obfuscated.conf")) =~ @peer3_psk
+
+    bundle = Path.join(config.state_dir, "candidate/client-bundles/peer3")
+    assert File.exists?(Path.join(bundle, "peer3.conf"))
+    assert File.exists?(Path.join(bundle, "peer3-obfuscated.conf"))
+  end
+
+  test "start-next rejects placeholder compose registry before docker pull" do
+    {root, config} = repo_config()
+    on_exit(fn -> File.rm_rf(root) end)
+
+    assert {:ok, _} =
+             Rotation.stage(config, runner: key_runner(), generation_id: "gen1", now: @now)
+
+    File.write!(Path.join(root, ".env"), "REGISTRY=<server-local-ip>:5000\nIMAGE_TAG=latest\n")
+
+    assert {:error, error} =
+             Rotation.start_next(config,
+               compose_env: %{},
+               runner: fn command, _args, _opts ->
+                 flunk("unexpected docker command: #{command}")
+               end
+             )
+
+    assert error.step == :compose_env
+    assert error.message =~ "REGISTRY contains an unresolved placeholder"
+    assert error.details =~ "SERVER_IP=<server-local-ip>"
   end
 
   test "scheduled run does not stage another generation while one is pending" do
@@ -117,6 +187,65 @@ defmodule WgKeyRotator.RotationTest do
 
     assert result.status == :pending
     assert result.generation_id == "gen1"
+    assert File.exists?(Path.join(root, "secrets/admin_api_key"))
+    assert File.exists?(Path.join(root, "secrets/wg_obfuscation_key"))
+  end
+
+  test "scheduled run restarts pending candidate when next service is not running" do
+    {root, config} = repo_config()
+    on_exit(fn -> File.rm_rf(root) end)
+
+    assert {:ok, _} =
+             Rotation.stage(config, runner: key_runner(), generation_id: "gen1", now: @now)
+
+    test_pid = self()
+
+    runner = fn command, args, opts ->
+      send(test_pid, {:command, command, args, opts})
+      {"started", 0}
+    end
+
+    assert {:ok, result} =
+             Rotation.scheduled(config,
+               now_epoch: DateTime.to_unix(@now) + 100,
+               runner: runner,
+               dump_fun: fn ->
+                 {:error,
+                  %Error{
+                    step: :candidate_dump,
+                    message: "docker exited with status 1",
+                    details: "service \"ssl-proxy-next\" is not running"
+                  }}
+               end
+             )
+
+    assert result.status == :candidate_started
+    assert result.generation_id == "gen1"
+
+    assert_receive {:command, "docker",
+                    [
+                      "compose",
+                      "--profile",
+                      "rotation",
+                      "pull",
+                      "ssl-proxy-next",
+                      "wg-udp-frontdoor"
+                    ], pull_opts}
+
+    assert pull_opts[:cd] == root
+
+    assert_receive {:command, "docker",
+                    [
+                      "compose",
+                      "--profile",
+                      "rotation",
+                      "up",
+                      "-d",
+                      "ssl-proxy-next",
+                      "wg-udp-frontdoor"
+                    ], opts}
+
+    assert opts[:cd] == root
   end
 
   test "promote enforces all-peer handshake gate then installs active files" do
@@ -168,6 +297,7 @@ defmodule WgKeyRotator.RotationTest do
     File.mkdir_p!(Path.join(root, "config/peer2"))
     File.mkdir_p!(Path.join(root, "config/server"))
     File.touch!(Path.join(root, "docker-compose.yaml"))
+    File.write!(Path.join(root, ".env"), "REGISTRY=192.168.1.221:5000\nIMAGE_TAG=latest\n")
 
     File.write!(Path.join(root, "config/peer1/peer1.conf"), peer_conf("10.13.13.2/32"))
 
@@ -220,15 +350,16 @@ defmodule WgKeyRotator.RotationTest do
     {:ok, agent} =
       Agent.start_link(fn ->
         %{
-          private_keys: [@server_private, @peer1_private, @peer2_private],
-          psks: [@peer1_psk, @peer2_psk]
+          private_keys: [@server_private, @peer1_private, @peer2_private, @peer3_private],
+          psks: [@peer1_psk, @peer2_psk, @peer3_psk]
         }
       end)
 
     pubkeys = %{
       @server_private => @server_public,
       @peer1_private => @peer1_public,
-      @peer2_private => @peer2_public
+      @peer2_private => @peer2_public,
+      @peer3_private => @peer3_public
     }
 
     fn
@@ -257,7 +388,10 @@ defmodule WgKeyRotator.RotationTest do
 
   defp docker_runner do
     fn
-      "docker", ["compose", "up", "-d", "--build", "ssl-proxy"], _opts ->
+      "docker", ["compose", "pull", "ssl-proxy"], _opts ->
+        {"pull ok", 0}
+
+      "docker", ["compose", "up", "-d", "ssl-proxy"], _opts ->
         {"deploy ok", 0}
 
       "docker", ["compose", "ps", "ssl-proxy"], _opts ->

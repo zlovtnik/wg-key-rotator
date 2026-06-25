@@ -1,5 +1,11 @@
 defmodule WgKeyRotator.CLI do
-  alias WgKeyRotator.{Config, Error, Rotation}
+  @moduledoc """
+  Command-line interface for the wg-key-rotator application. Defines
+  top-level commands (`rotate`, `stage`, `status`, etc.) called from
+  `escript` or Mix run.
+  """
+
+  alias WgKeyRotator.{Config, Error, Rotation, Secrets}
 
   def main(argv) do
     case run(argv) do
@@ -35,6 +41,11 @@ defmodule WgKeyRotator.CLI do
   def run(["status"]), do: run_rotation_command(:status)
   def run(["promote"]), do: run_rotation_command(:promote)
   def run(["rollback"]), do: run_rotation_command(:rollback)
+  def run(["secrets", "generate" | args]), do: run_secrets_generate(args)
+  def run(["secrets", "check"]), do: run_secrets_command(:check)
+  def run(["secrets", "repair"]), do: run_secrets_command(:repair)
+  def run(["secrets", "env"]), do: run_secrets_command(:env)
+  def run(["secrets" | _argv]), do: {:halt, 64, usage()}
   def run(["--help"]), do: {:halt, 0, usage()}
   def run(["help"]), do: {:halt, 0, usage()}
   def run([]), do: {:halt, 64, usage()}
@@ -64,6 +75,39 @@ defmodule WgKeyRotator.CLI do
         {:error, error} -> {:error, error}
       end
     end
+  end
+
+  defp run_secrets_generate(args) do
+    with {:ok, opts} <- parse_secret_generate_args(args),
+         {:ok, repo_root} <- Secrets.repo_root() do
+      Secrets.generate(repo_root, opts)
+    else
+      {:error, %Error{} = error} -> {:error, error}
+      :error -> {:halt, 64, usage()}
+    end
+  end
+
+  defp run_secrets_command(command) do
+    with {:ok, repo_root} <- Secrets.repo_root() do
+      case command do
+        :check -> Secrets.check(repo_root)
+        :repair -> Secrets.repair(repo_root)
+        :env -> Secrets.env(repo_root)
+      end
+    end
+  end
+
+  defp parse_secret_generate_args(args) do
+    Enum.reduce_while(args, {:ok, []}, fn
+      "--force", {:ok, opts} ->
+        {:cont, {:ok, Keyword.put(opts, :force, true)}}
+
+      "--dry-run", {:ok, opts} ->
+        {:cont, {:ok, Keyword.put(opts, :dry_run, true)}}
+
+      _arg, {:ok, _opts} ->
+        {:halt, :error}
+    end)
   end
 
   defp run_dry do
@@ -120,6 +164,10 @@ defmodule WgKeyRotator.CLI do
       wg_key_rotator status
       wg_key_rotator promote
       wg_key_rotator rollback
+      wg_key_rotator secrets generate [--force] [--dry-run]
+      wg_key_rotator secrets check
+      wg_key_rotator secrets repair
+      wg_key_rotator secrets env
 
     required environment for legacy rotate:
       WAHA_CHAT_ID
@@ -136,6 +184,7 @@ defmodule WgKeyRotator.CLI do
       ROTATOR_INCLUDE_PUBLIC_KEY
       ROTATOR_HEALTH_URL
       ROTATOR_STATE_DIR
+      WG_PEERS
       ROTATOR_PEERS
       ROTATOR_MIGRATION_TIMEOUT_SECS
       ROTATOR_HANDSHAKE_GRACE_SECS

@@ -1,9 +1,13 @@
 defmodule WgKeyRotator.Message do
+  @moduledoc """
+  Renders a human-readable rotation notification message for WhatsApp.
+  """
+
   def render(config, public_key, now) do
     [
       "WireGuard server key rotation complete",
       "at: #{DateTime.to_iso8601(now)}",
-      "deploy: docker compose up -d --build ssl-proxy",
+      "deploy: docker compose pull ssl-proxy && docker compose up -d ssl-proxy",
       "health: ok",
       public_key_line(config, public_key)
     ]
