@@ -3,7 +3,7 @@ defmodule WgKeyRotator.Secrets do
 
   import Bitwise
 
-  alias WgKeyRotator.{AtomicFile, Error}
+  alias WgKeyRotator.{AtomicFile, Error, PeerConfig}
 
   @secret_dir "secrets"
   @env_file ".env"
@@ -170,7 +170,8 @@ defmodule WgKeyRotator.Secrets do
     with :ok <- ensure_secret_directories(repo_root),
          :ok <- repair_secret_file_modes(repo_root),
          :ok <- repair_missing_secret_files(repo_root),
-         :ok <- repair_copy_files(repo_root) do
+         :ok <- repair_copy_files(repo_root),
+         :ok <- repair_peer_server_public_keys(repo_root) do
       case check(repo_root) do
         {:ok, _output} -> {:ok, "OK: repaired secret tree"}
         {:error, error} -> {:error, error}
@@ -474,6 +475,74 @@ defmodule WgKeyRotator.Secrets do
         {:error, error} -> {:halt, {:error, error}}
       end
     end)
+  end
+
+  defp repair_peer_server_public_keys(repo_root) do
+    public_key_path = Path.join([repo_root, "config", "server", "publickey-server"])
+
+    case File.read(public_key_path) do
+      {:ok, contents} ->
+        public_key = String.trim(contents)
+
+        if valid_wireguard_key?(public_key) do
+          repo_root
+          |> peer_config_paths()
+          |> Enum.reduce_while(:ok, fn path, :ok ->
+            case repair_peer_server_public_key(path, public_key) do
+              :ok -> {:cont, :ok}
+              {:error, error} -> {:halt, {:error, error}}
+            end
+          end)
+        else
+          {:error,
+           %Error{
+             step: :secret_repair,
+             message: "invalid WireGuard server public key",
+             details: public_key_path
+           }}
+        end
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, reason} ->
+        secret_repair_error(public_key_path, reason)
+    end
+  end
+
+  defp peer_config_paths(repo_root) do
+    repo_root
+    |> Path.join("config/*/*.conf")
+    |> Path.wildcard()
+    |> Enum.filter(fn path ->
+      peer = path |> Path.dirname() |> Path.basename()
+      basename = Path.basename(path)
+      basename == "#{peer}.conf" or basename == "#{peer}-obfuscated.conf"
+    end)
+  end
+
+  defp repair_peer_server_public_key(path, public_key) do
+    case File.read(path) do
+      {:ok, contents} ->
+        if PeerConfig.value(contents, "Peer", "PublicKey") == public_key do
+          :ok
+        else
+          rendered =
+            PeerConfig.replace_values(contents, [{"Peer", "PublicKey", public_key}])
+
+          AtomicFile.write(path, rendered, 0o600)
+        end
+
+      {:error, reason} ->
+        secret_repair_error(path, reason)
+    end
+  end
+
+  defp valid_wireguard_key?(value) do
+    case Base.decode64(value) do
+      {:ok, decoded} -> byte_size(decoded) == 32
+      :error -> false
+    end
   end
 
   defp secret_repair_error(path, reason) do

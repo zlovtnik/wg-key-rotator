@@ -102,6 +102,37 @@ defmodule WgKeyRotator.SecretsTest do
              File.read!(Path.join(root, "secrets/wg_obfuscation_key"))
   end
 
+  test "repair syncs the active server public key into generated peer profiles" do
+    root = tmp_repo()
+    on_exit(fn -> File.rm_rf(root) end)
+
+    assert {:ok, _output} = Secrets.generate(root)
+    File.rm!(Path.join(root, "secrets/ONE_TIME_TOKENS"))
+
+    public_key = Base.encode64(:binary.copy(<<7>>, 32))
+    server_dir = Path.join(root, "config/server")
+    peer_dir = Path.join(root, "config/peer2")
+    File.mkdir_p!(server_dir)
+    File.mkdir_p!(peer_dir)
+    File.write!(Path.join(server_dir, "publickey-server"), public_key <> "\n")
+
+    for name <- ["peer2.conf", "peer2-obfuscated.conf"] do
+      File.write!(
+        Path.join(peer_dir, name),
+        "[Interface]\nPrivateKey = private\n[Peer]\nPublicKey = <server-public-key>\n"
+      )
+    end
+
+    assert {:ok, "OK: repaired secret tree"} = Secrets.repair(root)
+
+    for name <- ["peer2.conf", "peer2-obfuscated.conf"] do
+      path = Path.join(peer_dir, name)
+      assert File.read!(path) =~ "PublicKey = #{public_key}"
+      refute File.read!(path) =~ "<server-public-key>"
+      assert mode(path) == 0o600
+    end
+  end
+
   test "repair creates missing Oracle password without rotating existing secrets" do
     root = tmp_repo()
     on_exit(fn -> File.rm_rf(root) end)
