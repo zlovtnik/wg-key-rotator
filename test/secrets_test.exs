@@ -7,6 +7,7 @@ defmodule WgKeyRotator.SecretsTest do
 
   @secret_files [
     {"postgres.key", 0o600},
+    {"redis.key", 0o600},
     {"minio_access_key.key", 0o600},
     {"minio_secret_key.key", 0o600},
     {"admin_api_key", 0o400},
@@ -154,6 +155,30 @@ defmodule WgKeyRotator.SecretsTest do
     assert File.read!(postgres_path) == original_postgres
     assert File.exists?(oracle_path)
     assert mode(oracle_path) == 0o444
+    assert mode(Path.join(root, "secrets")) == 0o711
+  end
+
+  test "repair creates missing Redis password without rotating existing secrets" do
+    root = tmp_repo()
+    on_exit(fn -> File.rm_rf(root) end)
+
+    assert {:ok, _output} = Secrets.generate(root)
+    File.rm!(Path.join(root, "secrets/ONE_TIME_TOKENS"))
+
+    postgres_path = Path.join(root, "secrets/postgres.key")
+    redis_path = Path.join(root, "secrets/redis.key")
+    original_postgres = File.read!(postgres_path)
+    File.rm!(redis_path)
+    assert :ok = File.chmod(Path.join(root, "secrets"), 0o700)
+
+    assert {:error, error} = Secrets.check(root)
+    assert error.details =~ "MISSING #{redis_path}"
+
+    assert {:ok, "OK: repaired secret tree"} = Secrets.repair(root)
+    assert {:ok, "OK: secret tree is complete"} = Secrets.check(root)
+    assert File.read!(postgres_path) == original_postgres
+    assert File.exists?(redis_path)
+    assert mode(redis_path) == 0o600
     assert mode(Path.join(root, "secrets")) == 0o711
   end
 
