@@ -13,6 +13,13 @@ defmodule WgKeyRotator.SecretsTest do
     {"admin_api_key", 0o400},
     {"wg_obfuscation_key", 0o400},
     {"grafana_admin_password.key", 0o600},
+    {"schema-migrator/encrypt_key.key", 0o600},
+    {"schema-migrator/jwt_secret.key", 0o600},
+    {"schema-migrator/api_bearer_token.key", 0o600},
+    {"schema-migrator/mongo_password.key", 0o600},
+    {"schema-migrator/keycloak_database_password.key", 0o600},
+    {"schema-migrator/keycloak_bootstrap_admin_password.key", 0o600},
+    {"schema-migrator/application_admin_password.key", 0o600},
     {"oracle_password.txt", 0o444},
     {"atheros_api_token_sha256.key", 0o600},
     {"waha/api_key.key", 0o600},
@@ -48,10 +55,26 @@ defmodule WgKeyRotator.SecretsTest do
     token_file = Path.join(root, "secrets/ONE_TIME_TOKENS")
     assert mode(token_file) == 0o600
     raw_token = token_file |> File.read!() |> token_value("ATHEROS_API_TOKEN")
+
+    schema_admin_password =
+      token_file |> File.read!() |> token_value("SCHEMA_MIGRATOR_ADMIN_PASSWORD")
+
     expected_hash = :crypto.hash(:sha256, raw_token) |> Base.encode16(case: :lower)
 
     assert File.read!(Path.join(root, "secrets/atheros_api_token_sha256.key")) |> String.trim() ==
              expected_hash
+
+    assert schema_admin_password ==
+             File.read!(Path.join(root, "secrets/schema-migrator/application_admin_password.key"))
+             |> String.trim()
+
+    assert {:ok, encrypt_key} =
+             Path.join(root, "secrets/schema-migrator/encrypt_key.key")
+             |> File.read!()
+             |> String.trim()
+             |> Base.decode64()
+
+    assert byte_size(encrypt_key) == 32
   end
 
   test "check fails while one-time token file exists and passes after cleanup" do
@@ -180,6 +203,32 @@ defmodule WgKeyRotator.SecretsTest do
     assert File.exists?(redis_path)
     assert mode(redis_path) == 0o600
     assert mode(Path.join(root, "secrets")) == 0o711
+  end
+
+  test "repair adds missing schema migrator secrets and emits the temporary administrator password" do
+    root = tmp_repo()
+    on_exit(fn -> File.rm_rf(root) end)
+
+    assert {:ok, _output} = Secrets.generate(root)
+    File.rm!(Path.join(root, "secrets/ONE_TIME_TOKENS"))
+
+    schema_dir = Path.join(root, "secrets/schema-migrator")
+    File.rm_rf!(schema_dir)
+
+    assert {:error, error} = Secrets.check(root)
+    assert error.details =~ "schema-migrator/application_admin_password.key"
+
+    assert {:error, error} = Secrets.repair(root)
+    assert error.details =~ "ONE_TIME_TOKENS_PRESENT"
+
+    token_file = Path.join(root, "secrets/ONE_TIME_TOKENS")
+    assert File.exists?(token_file)
+
+    assert token_value(File.read!(token_file), "SCHEMA_MIGRATOR_ADMIN_PASSWORD") ==
+             File.read!(Path.join(schema_dir, "application_admin_password.key")) |> String.trim()
+
+    File.rm!(token_file)
+    assert {:ok, "OK: secret tree is complete"} = Secrets.check(root)
   end
 
   test "repair preserves pending generation candidate secrets" do
