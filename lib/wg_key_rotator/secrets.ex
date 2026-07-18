@@ -21,13 +21,6 @@ defmodule WgKeyRotator.Secrets do
       mode: 0o600
     },
     %{
-      path: "redis.key",
-      bytes: 32,
-      kind: :secret,
-      mode: 0o600,
-      repair_missing: true
-    },
-    %{
       path: "minio_access_key.key",
       bytes: 24,
       kind: :secret,
@@ -82,7 +75,7 @@ defmodule WgKeyRotator.Secrets do
       repair_missing: true
     },
     %{
-      path: "schema-migrator/mongo_password.key",
+      path: "schema-migrator/state_db_password.key",
       bytes: 32,
       kind: :secret,
       mode: 0o600,

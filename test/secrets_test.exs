@@ -7,7 +7,6 @@ defmodule WgKeyRotator.SecretsTest do
 
   @secret_files [
     {"postgres.key", 0o600},
-    {"redis.key", 0o600},
     {"minio_access_key.key", 0o600},
     {"minio_secret_key.key", 0o600},
     {"admin_api_key", 0o400},
@@ -16,7 +15,7 @@ defmodule WgKeyRotator.SecretsTest do
     {"schema-migrator/encrypt_key.key", 0o600},
     {"schema-migrator/jwt_secret.key", 0o600},
     {"schema-migrator/api_bearer_token.key", 0o600},
-    {"schema-migrator/mongo_password.key", 0o600},
+    {"schema-migrator/state_db_password.key", 0o600},
     {"schema-migrator/keycloak_database_password.key", 0o600},
     {"schema-migrator/keycloak_bootstrap_admin_password.key", 0o600},
     {"schema-migrator/application_admin_password.key", 0o600},
@@ -181,7 +180,7 @@ defmodule WgKeyRotator.SecretsTest do
     assert mode(Path.join(root, "secrets")) == 0o711
   end
 
-  test "repair creates missing Redis password without rotating existing secrets" do
+  test "repair creates missing schema migrator state database password without rotating existing secrets" do
     root = tmp_repo()
     on_exit(fn -> File.rm_rf(root) end)
 
@@ -189,19 +188,19 @@ defmodule WgKeyRotator.SecretsTest do
     File.rm!(Path.join(root, "secrets/ONE_TIME_TOKENS"))
 
     postgres_path = Path.join(root, "secrets/postgres.key")
-    redis_path = Path.join(root, "secrets/redis.key")
+    state_db_path = Path.join(root, "secrets/schema-migrator/state_db_password.key")
     original_postgres = File.read!(postgres_path)
-    File.rm!(redis_path)
+    File.rm!(state_db_path)
     assert :ok = File.chmod(Path.join(root, "secrets"), 0o700)
 
     assert {:error, error} = Secrets.check(root)
-    assert error.details =~ "MISSING #{redis_path}"
+    assert error.details =~ "MISSING #{state_db_path}"
 
     assert {:ok, "OK: repaired secret tree"} = Secrets.repair(root)
     assert {:ok, "OK: secret tree is complete"} = Secrets.check(root)
     assert File.read!(postgres_path) == original_postgres
-    assert File.exists?(redis_path)
-    assert mode(redis_path) == 0o600
+    assert File.exists?(state_db_path)
+    assert mode(state_db_path) == 0o600
     assert mode(Path.join(root, "secrets")) == 0o711
   end
 
