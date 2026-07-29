@@ -1,148 +1,110 @@
 # WireGuard Key Rotator
 
-Small Elixir controller for scheduled WireGuard security rotation in the local Docker Compose stack.
+This Elixir controller performs staged WireGuard server/peer key rotation for
+the root Compose topology. The preferred flow keeps the active proxy available
+while a candidate starts, waits for every configured peer to produce a recent
+candidate handshake, then promotes the generation.
 
-It can still run the legacy one-shot server-key rotation, but the preferred flow is now staged:
-
-```sh
+```bash
 bin/wg_key_rotator stage
 bin/wg_key_rotator start-next
 bin/wg_key_rotator status
 bin/wg_key_rotator promote
 ```
 
-`rotate --scheduled` is the cron-safe wrapper: it stages and starts a candidate when no generation is pending, and promotes only after every configured peer has a recent candidate handshake.
+`rotate --scheduled` is the cron-safe wrapper. It stages and starts a candidate
+when none is pending, then promotes only after the configured peers migrate.
 
-## Configure
+## Configuration
 
-```sh
-cp .env.example .env
-$EDITOR .env
+Copy `.env.example` only for local development; do not commit `.env` or key
+material.
+
+| Variable | Purpose |
+|---|---|
+| `ROTATOR_REPO_ROOT` | Absolute parent `ssl-proxy` checkout |
+| `ROTATOR_STATE_DIR` | Generated rotation state, default `secrets/wg-rotation` |
+| `ROTATOR_FRONTDOOR_CONFIG_PATH` | Frontdoor backend TOML |
+| `WG_PEERS` | Stack-wide peer list, default `peer1,peer2` |
+| `ROTATOR_PEERS` | Optional rotator-only peer override |
+| `ROTATOR_MIGRATION_TIMEOUT_SECS` | Pending-generation expiry, default 24 hours |
+| `ROTATOR_HANDSHAKE_GRACE_SECS` | Maximum age of a migrated handshake, default 10 minutes |
+| `ROTATOR_NEXT_ADMIN_PORT` | Candidate admin port, default `3012` |
+| `ROTATOR_HEALTH_URL` | Active proxy health URL |
+| `ROTATOR_HEALTH_TIMEOUT_MS` | Health request timeout |
+| `ROTATOR_COMMAND_TIMEOUT_MS` | Per-Docker-command timeout |
+
+Active key destinations default to
+`config/server/privatekey-server` and `config/server/publickey-server` under
+the parent repository. Relative paths are resolved from `ROTATOR_REPO_ROOT`.
+
+## Optional WAHA notifications
+
+| Variable | Purpose |
+|---|---|
+| `WAHA_BASE_URL` | WAHA API; host default matches port `3006` |
+| `WAHA_SESSION` | Session name, default `default` |
+| `WAHA_CHAT_ID` | Notification chat; required only by the legacy one-shot flow |
+| `WAHA_API_KEY` / `WAHA_API_KEY_FILE` | WAHA API credential |
+
+The root `rotator` Compose profile enables WAHA authentication. Generate and
+materialize root-stack secrets with the parent repository's
+`scripts/gen-secrets` commands.
+
+## Run
+
+Staged/scheduled flow:
+
+```bash
+bin/wg_key_rotator rotate --scheduled
 ```
 
-The rotator reads configuration from environment variables. Most are optional and have sensible defaults.
+Inspect without promoting:
 
-### Notification
+```bash
+bin/wg_key_rotator status
+```
 
-- `WAHA_BASE_URL` — WAHA HTTP endpoint. Defaults to `http://127.0.0.1:3006` for host-run commands, matching the root compose `rotator` profile's `WAHA_HOST_PORT`.
-- `WAHA_SESSION` — WAHA session name. Defaults to `default`.
-- `WAHA_CHAT_ID` — WhatsApp chat ID for notifications. Required for the legacy `rotate` command; optional for staged rotation commands.
-- `WAHA_API_KEY` or `WAHA_API_KEY_FILE` — WAHA API key. Use `WAHA_API_KEY_FILE` to read the key from a file path.
+Rollback disables candidate frontdoor backends and stops the candidate:
 
-The compose profile defaults the WAHA image to `devlikeapro/waha` on `linux/amd64` because the Core image does not publish a multi-arch manifest for every host. On native ARM deployments, set `WAHA_IMAGE=devlikeapro/waha:arm` and `WAHA_PLATFORM=linux/arm64`.
+```bash
+bin/wg_key_rotator rollback
+```
 
-For local compose use, WAHA auth is enabled by default. Generate root stack credentials with `scripts/gen-secrets generate`, then materialize `.env` with `scripts/gen-secrets env` so WAHA and the rotator share the same API key.
+With the parent Compose profile:
 
-### Secret bootstrap
+```bash
+docker compose --profile rotator up -d waha
+docker compose --profile rotator run --rm wg-key-rotator rotate --scheduled
+```
 
-The rotator owns root stack secret bootstrap:
+The legacy one-shot `rotate` command remains for compatibility and can notify
+the server public key, but it does not provide the staged peer migration
+window. Prefer the scheduled staged flow.
 
-```sh
+## Secret bootstrap
+
+Run these from the parent repository:
+
+```bash
 scripts/gen-secrets generate
 scripts/gen-secrets env
 scripts/gen-secrets check
 scripts/gen-secrets repair
 ```
 
-`generate` refuses to overwrite existing managed secret files unless `--force` is passed. A dry run is available with `scripts/gen-secrets --dry-run`.
-`repair` fixes managed permissions and candidate secret copies without replacing root secrets.
+`generate` refuses to overwrite managed secrets without `--force`. Save
+one-time tokens in the approved secret manager and remove their temporary file.
+`repair` fixes permissions and candidate copies without replacing root
+secrets.
 
-The raw Atheros API token is written once to `secrets/ONE_TIME_TOKENS`. Save it outside the repository and delete that file; `scripts/gen-secrets check` fails while it exists.
+## Development
 
-### Repository and state
-
-- `ROTATOR_REPO_ROOT` — Absolute path to the `ssl-proxy` checkout. Auto-discovered when the rotator runs from inside the repo. Set this when running from elsewhere.
-- `ROTATOR_STATE_DIR` — Directory for rotation state and generated keys. Defaults to `secrets/wg-rotation` under `ROTATOR_REPO_ROOT`.
-- `ROTATOR_FRONTDOOR_CONFIG_PATH` — Path to the frontdoor TOML config. Defaults to `secrets/wg-rotation/frontdoor/wg-udp-frontdoor.toml` under `ROTATOR_REPO_ROOT`.
-- `ROTATOR_COMMAND_TIMEOUT_MS` — Timeout for each Docker command. Defaults to `600000` (10 minutes).
-
-### Key material
-
-- `ROTATOR_PRIVATE_KEY_PATH` — Where the active server private key is written. Defaults to `config/server/privatekey-server`.
-- `ROTATOR_PUBLIC_KEY_PATH` — Where the active server public key is written. Defaults to `config/server/publickey-server`.
-- `ROTATOR_INCLUDE_PUBLIC_KEY` — Include the server public key in WhatsApp notifications for the legacy `rotate` flow. Defaults to `true`.
-
-### Peers and migration
-
-- `WG_PEERS` — Stack-wide comma-separated peer names used by the active proxy, candidate proxy, `up-ready`, and the rotator. Defaults to `peer1,peer2`.
-- `ROTATOR_PEERS` — Optional rotator-only peer list override. When blank or unset, the rotator uses `WG_PEERS`.
-- `ROTATOR_MIGRATION_TIMEOUT_SECS` — Max age of a pending generation before it is considered expired. Defaults to `86400` (24 hours).
-- `ROTATOR_HANDSHAKE_GRACE_SECS` — Max age of a peer handshake to count as migrated. Defaults to `600` (10 minutes).
-- `ROTATOR_NEXT_ADMIN_PORT` — Admin port for the `ssl-proxy-next` candidate container. Defaults to `3012`.
-- `ROTATOR_HEALTH_URL` — Health check URL. Defaults to `http://127.0.0.1:3002/health`.
-- `ROTATOR_HEALTH_TIMEOUT_MS` — Health check timeout. Defaults to `5000`.
-
-All key paths and the frontdoor config path are resolved relative to `ROTATOR_REPO_ROOT` unless they are absolute paths.
-
-## Run
-
-```sh
-mix run -e 'WgKeyRotator.CLI.rotate()'
-```
-
-or:
-
-```sh
-bin/wg_key_rotator rotate
-```
-
-Scheduled full rotation:
-
-```sh
-bin/wg_key_rotator rotate --scheduled
-```
-
-
-### Legacy one-shot rotation
-
-The legacy flow generates keys, deploys `ssl-proxy`, and sends a WhatsApp notification with the new server public key. It requires `WAHA_CHAT_ID`.
-
-```sh
-bin/wg_key_rotator rotate
-```
-
-Or via Elixir directly:
-
-```sh
-mix run -e 'WgKeyRotator.CLI.rotate()'
-```
-
-Dry run writes generated keys under a temporary directory and stubs deploy and WhatsApp:
-
-```sh
+```bash
+mix test
+mix format --check-formatted
 bin/wg_key_rotator rotate --dry-run
 ```
 
-### Staged rotation
-
-The staged flow generates candidate keys, brings up `ssl-proxy-next`, waits for peers to connect with a recent handshake, then promotes the candidate to active. It is safe to run from cron.
-
-```sh
-bin/wg_key_rotator stage
-bin/wg_key_rotator start-next
-bin/wg_key_rotator status
-bin/wg_key_rotator promote
-```
-
-`rotate --scheduled` wraps the staged flow into a single cron-safe command. It stages and starts a candidate when no generation is pending. If a pending generation exists, it polls peer handshakes and promotes automatically once every peer has a recent handshake. If the candidate container is unavailable, it starts it automatically.
-
-```sh
-bin/wg_key_rotator rotate --scheduled
-```
-
-Rollback disables the candidate frontdoor backends and stops `ssl-proxy-next`:
-
-```sh
-bin/wg_key_rotator rollback
-```
-
-With the root compose profile, start WAHA and run the containerized rotator from the repository root:
-
-```sh
-docker compose --profile rotator up -d waha
-docker compose --profile rotator run --rm wg-key-rotator rotate --scheduled
-```
-
-## Schedule
-
-Use `ops/wg-key-rotator.crontab.example` as a starting point for a morning cron entry.
+Use `ops/wg-key-rotator.crontab.example` in the parent repository as a schedule
+template.
