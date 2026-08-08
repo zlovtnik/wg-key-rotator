@@ -1,7 +1,7 @@
 # WireGuard Key Rotator
 
-This Elixir controller performs staged WireGuard server/peer key rotation for
-the root Compose topology. The preferred flow keeps the active proxy available
+This Elixir controller performs staged WireGuard server/peer key rotation. The
+preferred flow keeps the active proxy available
 while a candidate starts, waits for every configured peer to produce a recent
 candidate handshake, then promotes the generation.
 
@@ -47,9 +47,9 @@ the parent repository. Relative paths are resolved from `ROTATOR_REPO_ROOT`.
 | `WAHA_CHAT_ID` | Notification chat; required only by the legacy one-shot flow |
 | `WAHA_API_KEY` / `WAHA_API_KEY_FILE` | WAHA API credential |
 
-The root `rotator` Compose profile enables WAHA authentication. Generate and
-materialize root-stack secrets with the parent repository's
-`scripts/gen-secrets` commands.
+The optional local test profile enables WAHA authentication. Generate and
+materialize local secrets with the parent repository's `scripts/gen-secrets`
+commands.
 
 ## Run
 
@@ -71,7 +71,9 @@ Rollback disables candidate frontdoor backends and stops the candidate:
 bin/wg_key_rotator rollback
 ```
 
-With the parent Compose profile:
+## Local development
+
+With the parent Docker Compose test profile:
 
 ```bash
 docker compose --profile rotator up -d waha
@@ -98,7 +100,7 @@ one-time tokens in the approved secret manager and remove their temporary file.
 `repair` fixes permissions and candidate copies without replacing root
 secrets.
 
-## Development
+## Development checks
 
 ```bash
 mix test
