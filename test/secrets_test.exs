@@ -12,6 +12,13 @@ defmodule WgKeyRotator.SecretsTest do
     {"admin_api_key", 0o400},
     {"wg_obfuscation_key", 0o400},
     {"grafana_admin_password.key", 0o600},
+    {"schema-migrator/encrypt_key.key", 0o600},
+    {"schema-migrator/jwt_secret.key", 0o600},
+    {"schema-migrator/api_bearer_token.key", 0o600},
+    {"schema-migrator/state_db_password.key", 0o600},
+    {"schema-migrator/keycloak_database_password.key", 0o600},
+    {"schema-migrator/keycloak_bootstrap_admin_password.key", 0o600},
+    {"schema-migrator/application_admin_password.key", 0o600},
     {"oracle_password.txt", 0o444},
     {"atheros_api_token_sha256.key", 0o600},
     {"waha/api_key.key", 0o600},
@@ -47,10 +54,26 @@ defmodule WgKeyRotator.SecretsTest do
     token_file = Path.join(root, "secrets/ONE_TIME_TOKENS")
     assert mode(token_file) == 0o600
     raw_token = token_file |> File.read!() |> token_value("ATHEROS_API_TOKEN")
+
+    schema_admin_password =
+      token_file |> File.read!() |> token_value("SCHEMA_MIGRATOR_ADMIN_PASSWORD")
+
     expected_hash = :crypto.hash(:sha256, raw_token) |> Base.encode16(case: :lower)
 
     assert File.read!(Path.join(root, "secrets/atheros_api_token_sha256.key")) |> String.trim() ==
              expected_hash
+
+    assert schema_admin_password ==
+             File.read!(Path.join(root, "secrets/schema-migrator/application_admin_password.key"))
+             |> String.trim()
+
+    assert {:ok, encrypt_key} =
+             Path.join(root, "secrets/schema-migrator/encrypt_key.key")
+             |> File.read!()
+             |> String.trim()
+             |> Base.decode64()
+
+    assert byte_size(encrypt_key) == 32
   end
 
   test "check fails while one-time token file exists and passes after cleanup" do
@@ -102,6 +125,37 @@ defmodule WgKeyRotator.SecretsTest do
              File.read!(Path.join(root, "secrets/wg_obfuscation_key"))
   end
 
+  test "repair syncs the active server public key into generated peer profiles" do
+    root = tmp_repo()
+    on_exit(fn -> File.rm_rf(root) end)
+
+    assert {:ok, _output} = Secrets.generate(root)
+    File.rm!(Path.join(root, "secrets/ONE_TIME_TOKENS"))
+
+    public_key = Base.encode64(:binary.copy(<<7>>, 32))
+    server_dir = Path.join(root, "config/server")
+    peer_dir = Path.join(root, "config/peer2")
+    File.mkdir_p!(server_dir)
+    File.mkdir_p!(peer_dir)
+    File.write!(Path.join(server_dir, "publickey-server"), public_key <> "\n")
+
+    for name <- ["peer2.conf", "peer2-obfuscated.conf"] do
+      File.write!(
+        Path.join(peer_dir, name),
+        "[Interface]\nPrivateKey = private\n[Peer]\nPublicKey = <server-public-key>\n"
+      )
+    end
+
+    assert {:ok, "OK: repaired secret tree"} = Secrets.repair(root)
+
+    for name <- ["peer2.conf", "peer2-obfuscated.conf"] do
+      path = Path.join(peer_dir, name)
+      assert File.read!(path) =~ "PublicKey = #{public_key}"
+      refute File.read!(path) =~ "<server-public-key>"
+      assert mode(path) == 0o600
+    end
+  end
+
   test "repair creates missing Oracle password without rotating existing secrets" do
     root = tmp_repo()
     on_exit(fn -> File.rm_rf(root) end)
@@ -124,6 +178,56 @@ defmodule WgKeyRotator.SecretsTest do
     assert File.exists?(oracle_path)
     assert mode(oracle_path) == 0o444
     assert mode(Path.join(root, "secrets")) == 0o711
+  end
+
+  test "repair creates missing schema migrator state database password without rotating existing secrets" do
+    root = tmp_repo()
+    on_exit(fn -> File.rm_rf(root) end)
+
+    assert {:ok, _output} = Secrets.generate(root)
+    File.rm!(Path.join(root, "secrets/ONE_TIME_TOKENS"))
+
+    postgres_path = Path.join(root, "secrets/postgres.key")
+    state_db_path = Path.join(root, "secrets/schema-migrator/state_db_password.key")
+    original_postgres = File.read!(postgres_path)
+    File.rm!(state_db_path)
+    assert :ok = File.chmod(Path.join(root, "secrets"), 0o700)
+
+    assert {:error, error} = Secrets.check(root)
+    assert error.details =~ "MISSING #{state_db_path}"
+
+    assert {:ok, "OK: repaired secret tree"} = Secrets.repair(root)
+    assert {:ok, "OK: secret tree is complete"} = Secrets.check(root)
+    assert File.read!(postgres_path) == original_postgres
+    assert File.exists?(state_db_path)
+    assert mode(state_db_path) == 0o600
+    assert mode(Path.join(root, "secrets")) == 0o711
+  end
+
+  test "repair adds missing schema migrator secrets and emits the temporary administrator password" do
+    root = tmp_repo()
+    on_exit(fn -> File.rm_rf(root) end)
+
+    assert {:ok, _output} = Secrets.generate(root)
+    File.rm!(Path.join(root, "secrets/ONE_TIME_TOKENS"))
+
+    schema_dir = Path.join(root, "secrets/schema-migrator")
+    File.rm_rf!(schema_dir)
+
+    assert {:error, error} = Secrets.check(root)
+    assert error.details =~ "schema-migrator/application_admin_password.key"
+
+    assert {:error, error} = Secrets.repair(root)
+    assert error.details =~ "ONE_TIME_TOKENS_PRESENT"
+
+    token_file = Path.join(root, "secrets/ONE_TIME_TOKENS")
+    assert File.exists?(token_file)
+
+    assert token_value(File.read!(token_file), "SCHEMA_MIGRATOR_ADMIN_PASSWORD") ==
+             File.read!(Path.join(schema_dir, "application_admin_password.key")) |> String.trim()
+
+    File.rm!(token_file)
+    assert {:ok, "OK: secret tree is complete"} = Secrets.check(root)
   end
 
   test "repair preserves pending generation candidate secrets" do

@@ -3,7 +3,7 @@ defmodule WgKeyRotator.Secrets do
 
   import Bitwise
 
-  alias WgKeyRotator.{AtomicFile, Error}
+  alias WgKeyRotator.{AtomicFile, Error, PeerConfig}
 
   @secret_dir "secrets"
   @env_file ".env"
@@ -52,6 +52,57 @@ defmodule WgKeyRotator.Secrets do
       kind: :secret,
       env: "GRAFANA_ADMIN_PASSWORD",
       mode: 0o600
+    },
+    %{
+      path: "schema-migrator/encrypt_key.key",
+      bytes: 32,
+      kind: :base64_secret,
+      mode: 0o600,
+      repair_missing: true
+    },
+    %{
+      path: "schema-migrator/jwt_secret.key",
+      bytes: 48,
+      kind: :secret,
+      mode: 0o600,
+      repair_missing: true
+    },
+    %{
+      path: "schema-migrator/api_bearer_token.key",
+      bytes: 48,
+      kind: :secret,
+      mode: 0o600,
+      repair_missing: true
+    },
+    %{
+      path: "schema-migrator/state_db_password.key",
+      bytes: 32,
+      kind: :secret,
+      mode: 0o600,
+      repair_missing: true
+    },
+    %{
+      path: "schema-migrator/keycloak_database_password.key",
+      bytes: 32,
+      kind: :secret,
+      mode: 0o600,
+      repair_missing: true
+    },
+    %{
+      path: "schema-migrator/keycloak_bootstrap_admin_password.key",
+      bytes: 32,
+      kind: :secret,
+      mode: 0o600,
+      repair_missing: true
+    },
+    %{
+      path: "schema-migrator/application_admin_password.key",
+      bytes: 24,
+      kind: :bootstrap_secret,
+      token_env: "SCHEMA_MIGRATOR_ADMIN_PASSWORD",
+      token_label: "Schema Migrator schema-admin temporary password",
+      mode: 0o600,
+      repair_missing: true
     },
     %{
       path: "oracle_password.txt",
@@ -169,8 +220,10 @@ defmodule WgKeyRotator.Secrets do
   def repair(repo_root) do
     with :ok <- ensure_secret_directories(repo_root),
          :ok <- repair_secret_file_modes(repo_root),
-         :ok <- repair_missing_secret_files(repo_root),
-         :ok <- repair_copy_files(repo_root) do
+         {:ok, token_entries} <- repair_missing_secret_files(repo_root),
+         :ok <- write_one_time_tokens(repo_root, token_entries, false),
+         :ok <- repair_copy_files(repo_root),
+         :ok <- repair_peer_server_public_keys(repo_root) do
       case check(repo_root) do
         {:ok, _output} -> {:ok, "OK: repaired secret tree"}
         {:error, error} -> {:error, error}
@@ -225,6 +278,20 @@ defmodule WgKeyRotator.Secrets do
 
   defp secret_contents(%{kind: :secret, bytes: bytes}) do
     {random_secret(bytes) <> "\n", nil}
+  end
+
+  defp secret_contents(%{kind: :base64_secret, bytes: bytes}) do
+    {Base.encode64(:crypto.strong_rand_bytes(bytes)) <> "\n", nil}
+  end
+
+  defp secret_contents(%{
+         kind: :bootstrap_secret,
+         bytes: bytes,
+         token_env: token_env,
+         token_label: label
+       }) do
+    raw = random_secret(bytes)
+    {raw <> "\n", {token_env, label, raw}}
   end
 
   defp secret_contents(%{kind: :sha256, bytes: bytes, token_env: token_env, token_label: label}) do
@@ -434,24 +501,28 @@ defmodule WgKeyRotator.Secrets do
   end
 
   defp repair_missing_secret_files(repo_root) do
-    Enum.reduce_while(@secret_specs, :ok, fn spec, :ok ->
+    Enum.reduce_while(@secret_specs, {:ok, []}, fn spec, {:ok, token_entries} ->
       path = secret_path(repo_root, spec.path)
 
       result =
         cond do
           not Map.get(spec, :repair_missing, false) ->
-            :ok
+            {:ok, token_entries}
 
           File.exists?(path) ->
-            :ok
+            {:ok, token_entries}
 
           true ->
-            {contents, nil} = secret_contents(spec)
-            write_managed_file(path, contents, spec.mode, false)
+            {contents, token_entry} = secret_contents(spec)
+
+            case write_managed_file(path, contents, spec.mode, false) do
+              :ok -> {:ok, prepend_present(token_entry, token_entries)}
+              {:error, error} -> {:error, error}
+            end
         end
 
       case result do
-        :ok -> {:cont, :ok}
+        {:ok, next_entries} -> {:cont, {:ok, next_entries}}
         {:error, error} -> {:halt, {:error, error}}
       end
     end)
@@ -474,6 +545,74 @@ defmodule WgKeyRotator.Secrets do
         {:error, error} -> {:halt, {:error, error}}
       end
     end)
+  end
+
+  defp repair_peer_server_public_keys(repo_root) do
+    public_key_path = Path.join([repo_root, "config", "server", "publickey-server"])
+
+    case File.read(public_key_path) do
+      {:ok, contents} ->
+        public_key = String.trim(contents)
+
+        if valid_wireguard_key?(public_key) do
+          repo_root
+          |> peer_config_paths()
+          |> Enum.reduce_while(:ok, fn path, :ok ->
+            case repair_peer_server_public_key(path, public_key) do
+              :ok -> {:cont, :ok}
+              {:error, error} -> {:halt, {:error, error}}
+            end
+          end)
+        else
+          {:error,
+           %Error{
+             step: :secret_repair,
+             message: "invalid WireGuard server public key",
+             details: public_key_path
+           }}
+        end
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, reason} ->
+        secret_repair_error(public_key_path, reason)
+    end
+  end
+
+  defp peer_config_paths(repo_root) do
+    repo_root
+    |> Path.join("config/*/*.conf")
+    |> Path.wildcard()
+    |> Enum.filter(fn path ->
+      peer = path |> Path.dirname() |> Path.basename()
+      basename = Path.basename(path)
+      basename == "#{peer}.conf" or basename == "#{peer}-obfuscated.conf"
+    end)
+  end
+
+  defp repair_peer_server_public_key(path, public_key) do
+    case File.read(path) do
+      {:ok, contents} ->
+        if PeerConfig.value(contents, "Peer", "PublicKey") == public_key do
+          :ok
+        else
+          rendered =
+            PeerConfig.replace_values(contents, [{"Peer", "PublicKey", public_key}])
+
+          AtomicFile.write(path, rendered, 0o600)
+        end
+
+      {:error, reason} ->
+        secret_repair_error(path, reason)
+    end
+  end
+
+  defp valid_wireguard_key?(value) do
+    case Base.decode64(value) do
+      {:ok, decoded} -> byte_size(decoded) == 32
+      :error -> false
+    end
   end
 
   defp secret_repair_error(path, reason) do
@@ -534,9 +673,27 @@ defmodule WgKeyRotator.Secrets do
     end
   end
 
+  defp check_hash(issues, path, %{kind: :base64_secret, bytes: bytes}) do
+    if File.exists?(path) and File.regular?(path) do
+      case File.read(path) do
+        {:ok, contents} ->
+          case Base.decode64(String.trim(contents)) do
+            {:ok, decoded} when byte_size(decoded) == bytes -> issues
+            _ -> ["INVALID_BASE64_SECRET #{path}" | issues]
+          end
+
+        {:error, _reason} ->
+          ["UNREADABLE #{path}" | issues]
+      end
+    else
+      issues
+    end
+  end
+
   defp check_hash(issues, _path, _spec), do: issues
 
-  defp check_secret_value(issues, path, %{kind: :secret}) do
+  defp check_secret_value(issues, path, %{kind: kind})
+       when kind in [:secret, :base64_secret, :bootstrap_secret] do
     if File.exists?(path) and File.regular?(path) do
       case File.read(path) do
         {:ok, value} ->
