@@ -167,6 +167,8 @@ defmodule WgKeyRotator.Secrets do
     "WHATSAPP_SWAGGER_PASSWORD"
   ]
 
+  @repo_marker Path.join(["apps", "wg-key-rotator", "mix.exs"])
+
   def repo_root(env \\ System.get_env(), cwd \\ File.cwd!()) do
     case blank_to_nil(env["ROTATOR_REPO_ROOT"]) do
       nil -> discover_repo_root(cwd)
@@ -1035,7 +1037,7 @@ defmodule WgKeyRotator.Secrets do
     cwd
     |> Path.expand()
     |> ancestors()
-    |> Enum.find(&File.exists?(Path.join(&1, "docker-compose.yaml")))
+    |> Enum.find(&File.regular?(Path.join(&1, @repo_marker)))
     |> case do
       nil ->
         {:error,
@@ -1051,13 +1053,13 @@ defmodule WgKeyRotator.Secrets do
   end
 
   defp validate_repo_root(repo_root) do
-    if File.exists?(Path.join(repo_root, "docker-compose.yaml")) do
+    if File.regular?(Path.join(repo_root, @repo_marker)) do
       {:ok, repo_root}
     else
       {:error,
        %Error{
          step: :repo_root,
-         message: "repo root must contain docker-compose.yaml",
+         message: "repo root must contain #{@repo_marker}",
          details: repo_root
        }}
     end

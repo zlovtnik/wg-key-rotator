@@ -5,6 +5,8 @@ defmodule WgKeyRotator.SecretsTest do
 
   alias WgKeyRotator.Secrets
 
+  @repo_marker Path.join(["apps", "wg-key-rotator", "mix.exs"])
+
   @secret_files [
     {"postgres.key", 0o600},
     {"minio_access_key.key", 0o600},
@@ -74,6 +76,26 @@ defmodule WgKeyRotator.SecretsTest do
              |> Base.decode64()
 
     assert byte_size(encrypt_key) == 32
+  end
+
+  test "discovers and validates the current repository layout" do
+    root = tmp_repo()
+    nested = Path.join(root, "apps/wg-key-rotator")
+    on_exit(fn -> File.rm_rf(root) end)
+
+    assert {:ok, ^root} = Secrets.repo_root(%{}, nested)
+    assert {:ok, ^root} = Secrets.repo_root(%{"ROTATOR_REPO_ROOT" => root}, "/")
+  end
+
+  test "rejects a root that only has the retired compose marker" do
+    root = tmp_dir()
+    on_exit(fn -> File.rm_rf(root) end)
+    File.touch!(Path.join(root, "docker-compose.yaml"))
+
+    assert {:error, error} =
+             Secrets.repo_root(%{"ROTATOR_REPO_ROOT" => root}, "/")
+
+    assert error.message == "repo root must contain #{@repo_marker}"
   end
 
   test "check fails while one-time token file exists and passes after cleanup" do
@@ -389,11 +411,18 @@ defmodule WgKeyRotator.SecretsTest do
   defp mode(path), do: File.stat!(path).mode &&& 0o777
 
   defp tmp_repo do
+    root = tmp_dir()
+    marker = Path.join(root, @repo_marker)
+    File.mkdir_p!(Path.dirname(marker))
+    File.touch!(marker)
+    root
+  end
+
+  defp tmp_dir do
     root =
       Path.join(System.tmp_dir!(), "wg-key-rotator-secrets-#{System.unique_integer([:positive])}")
 
     File.mkdir_p!(root)
-    File.touch!(Path.join(root, "docker-compose.yaml"))
     root
   end
 end
