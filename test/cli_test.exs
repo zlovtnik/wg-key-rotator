@@ -47,8 +47,9 @@ defmodule WgKeyRotator.CLITest do
     root =
       Path.join(System.tmp_dir!(), "wg-key-rotator-cli-#{System.unique_integer([:positive])}")
 
-    File.mkdir_p!(root)
-    File.touch!(Path.join(root, "docker-compose.yaml"))
+    marker = Path.join([root, "apps", "wg-key-rotator", "mix.exs"])
+    File.mkdir_p!(Path.dirname(marker))
+    File.touch!(marker)
     root
   end
 end
